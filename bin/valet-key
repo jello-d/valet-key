@@ -9,7 +9,7 @@
 #
 #   claude [args]            run Claude in the resolved profile, on a lease slot
 #   valet-key run <agent> [args]    the same, named explicitly
-#   valet-key provision <agent> [profile] [N]    create/refresh a pool (N=10)
+#   valet-key provision <agent> [profile] [N]    create/refresh a pool (N=5)
 #   valet-key login [warm|check|force|stale] [agent] [profile]    logins
 #   valet-key stale              all pools: warm slots near their cap
 #   valet-key check <agent> [profile]    audit a pool
@@ -178,7 +178,7 @@ run_agent() {
 # also exporting the real binary for the interactive login verbs.
 m_provision() {
   load_adapter "${1:?agent required}"
-  _prof=${2:-$DEFAULT_PROFILE}; _n=${3:-10}
+  _prof=${2:-$DEFAULT_PROFILE}; _n=${3:-5}
   "$SLOTS" provision "$(pool_id "$_prof")" "$(profile_dir "$_prof")" "$_n"
 }
 # valet-key login [warm|check|force|stale] [agent] [profile]

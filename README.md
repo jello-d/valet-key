@@ -157,7 +157,7 @@ Full reference in **`man valet-key`**. The essentials:
 ```
 claude [args]                      run Claude in the resolved profile, on a slot
 valet-key run <agent> [args]       the same, named explicitly
-valet-key provision <agent> [profile] [N]     create/refresh a pool (N=10)
+valet-key provision <agent> [profile] [N]     create/refresh a pool (N=5)
 valet-key login [warm|check|force|stale] [agent] [profile]    slot logins
 valet-key stale                    all pools: warm slots near their token cap
 valet-key check <agent> [profile]  audit a pool (counts + drift)
@@ -179,7 +179,7 @@ valet-key unshim <agent>... | shims | init | shims-dir | rehash
 - **`<AGENT>_BIN`** overrides an adapter's resolved binary, for an odd install
   or a test (`CLAUDE_BIN`, `CODEX_BIN`, ...).
 
-Pool size is the `N` argument to `provision` (default `10`), not an env var.
+Pool size is the `N` argument to `provision` (default `5`), not an env var.
 Size it to your peak concurrent sessions plus a little headroom, and no higher:
 overflow just falls back to the base config, so undersizing is cheap, while
 oversizing backfires two ways. Idle slots still age toward their token cap
