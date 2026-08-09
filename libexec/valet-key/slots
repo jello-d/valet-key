@@ -1,0 +1,378 @@
+#!/bin/sh
+# valet-key slots -- per-session credential-slot pool for a coding agent.
+#
+# Some agents keep a single credentials file whose refresh token is SINGLE-USE
+# and rotates on every refresh: session A refreshes, the server invalidates the
+# old token, and session B's in-memory copy is now dead -- B is forced to
+# re-login. (Claude Code is the canonical case.) This isolates exactly that one
+# file so no two live sessions share a rotating token.
+#
+# A POOL of thin slot dirs sits beside each (agent, profile) base config dir;
+# every slot SHARES the base's state (projects, plugins, settings, ... via
+# symlinks) but owns a PRIVATE, independently-logged-in credential file. The
+# engine LEASES a free slot per session. A slot's login is LAZY: it ships with
+# no credential file, so the first to reach it logs in once and is warm forever.
+#
+# What is shared vs private:
+#   - directories                : DIR SYMLINK to base (app writes inside them).
+#   - the STATIC files           : FILE SYMLINK to base (user-edited, ~stable).
+#   - the SEED files             : private copy (rewritten each run; no token).
+#   - the CRED file ($CRED_FILE) : PRIVATE, never seeded -- isolation target.
+#   - *.lock, every other file   : private, born in-slot.
+# The agent adapter supplies CRED_FILE / STATIC_FILES / SEED_FILES via the
+# environment; the defaults below are Claude Code's.
+#
+# Verbs (a POOL is <id> = <agent>/<profile>; <base> is that profile's config
+# dir for the agent):
+#   provision <id> <base> <N>   create/refresh N slots
+#   lease     <id> <base> <pid> print the slot dir to use (claims a free slot,
+#                               records <pid>), or <base> on overflow / no pool.
+#                               <pid> is the caller, which becomes the agent
+#                               process on exec, so the lease frees when it dies
+#   warm      <id> <base>       warm the next COLD slot (interactive login once)
+#   login-check <id> <base>     warm/total, each slot's rotation age + cap
+#   force     <id> <base>       re-login the OLDEST warm slot
+#   login-stale <id> <base>     re-login every slot within STALE_DAYS of its cap
+#   stale                       ALL pools: WARM slots within STALE_DAYS of cap,
+#                               "<id>/<slot> <days>d" a line (read-only)
+#   sync      <id> <base>       re-fan the shared links across existing slots
+#   check     <id> <base>       audit the pool; non-zero on structural drift
+#
+# POSIX sh (dash). Non-privileged, all under $HOME. Idempotent.
+set -eu
+
+POOL_ROOT=${VALET_KEY_POOL_ROOT:-$HOME/.valet-key-pool}
+
+# A warm slot silently goes cold when its refresh token hits its hard cap: the
+# cap is absolute from login and refreshing does NOT extend it. The pool cannot
+# be kept alive headlessly; we only SURFACE slots nearing the cap (STALE_DAYS)
+# so a re-login can happen before a session is forced into one.
+STALE_DAYS=${VALET_KEY_SLOT_STALE_DAYS:-7}
+
+# Per-agent file policy (the adapter overrides these; defaults are Claude Code).
+CRED_FILE=${VALET_KEY_CRED_FILE:-.credentials.json}     # the isolation target
+_static='settings.json settings.local.json CLAUDE.md'
+STATIC_FILES=${VALET_KEY_STATIC_FILES:-$_static}        # shared by symlink
+SEED_FILES=${VALET_KEY_SEED_FILES:-.claude.json}      # private copy, not a link
+
+TAB=$(printf '\t')
+SLOTS_QUIET=${SLOTS_QUIET:-0}      # lease self-heals quietly; provision loud
+
+warn() { [ "$SLOTS_QUIET" = 1 ] || echo "valet-key-slots: $*" >&2; }
+die() { echo "valet-key-slots: $*" >&2; exit 1; }
+
+pool_dir() { echo "$POOL_ROOT/$1"; }    # $1 = <agent>/<profile>
+
+# is <pid> a live agent process? kill -0 proves liveness; the cmdline check
+# dodges PID reuse. $VALET_KEY_PROC_MATCH (the adapter's agent name) narrows it.
+pid_live() {
+  p=$1
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$p" 2>/dev/null || return 1
+  cl=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)
+  case "$cl" in *"${VALET_KEY_PROC_MATCH:-}"*) return 0 ;; *) return 1 ;; esac
+}
+
+seed_copy() {   # copy <src> to <dst> privately and atomically
+  ( umask 077; cp "$1" "$2.tmp" && mv "$2.tmp" "$2" ) || warn "seed failed: $2"
+}
+
+# ensure <linkpath> is a symlink to <target>; report (not clobber) a real file
+# or dir sitting where the link belongs -- asserted-vs-actual drift, made loud.
+link_into() {
+  tgt=$1; lp=$2
+  if [ -L "$lp" ]; then
+    [ "$(readlink "$lp")" = "$tgt" ] || ln -sfn "$tgt" "$lp"
+    return 0
+  fi
+  if [ -e "$lp" ]; then
+    kind=file; [ -d "$lp" ] && kind=dir
+    warn "drift: $lp is a real $kind, not a link to $tgt (left as-is)"
+    return 0
+  fi
+  ln -s "$tgt" "$lp"
+}
+
+# fan the base's shared state into one slot: dirs and the static files by
+# symlink, the seed files copied once, the cred file and locks left private.
+seed_slot() {
+  base=$1; slot=$2
+  for e in "$base"/* "$base"/.*; do
+    [ -e "$e" ] || continue
+    b=${e##*/}
+    case "$b" in
+      .|..) continue ;;
+      "$CRED_FILE") continue ;;   # the isolation target: never shared
+      # A runtime lock is the isolation target too: NEVER share one. An agent
+      # creates a *.lock while rotating a token; sharing it (as a dir symlink)
+      # dangles once the base clears, and the slot's next refresh locks a
+      # dangling path and stalls into forced re-login. Each slot locks its own.
+      *.lock) continue ;;
+    esac
+    case " $SEED_FILES " in
+      *" $b "*)
+        [ -e "$slot/$b" ] || seed_copy "$e" "$slot/$b"
+        continue ;;
+    esac
+    if [ -d "$e" ]; then link_into "$e" "$slot/$b"; continue; fi
+    case " $STATIC_FILES " in
+      *" $b "*) link_into "$e" "$slot/$b" ;;
+      *) : ;;   # any other top-level file: private, born in-slot
+    esac
+  done
+  # Heal prior damage: a seed that ran while the base held a lock left a SHARED
+  # lock symlink (now dangling). Drop any lock symlink so the slot falls back to
+  # a private, born-in-slot lock. A real private lock is left untouched.
+  for lk in "$slot"/*.lock "$slot"/.*.lock; do
+    if [ -L "$lk" ]; then rm -f "$lk"; fi
+  done
+  return 0     # unmatched *.lock glob leaves a false status; never abort here
+}
+
+# mtime (epoch) of a path, or 0. A cred file's mtime IS its last rotation time.
+mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+# The slot's hard-cap expiry (ms epoch), or non-zero if unknown. The adapter
+# supplies the sed pattern ($VALET_KEY_EXP_PATTERN) that pulls the cap
+# out of its
+# cred file; an agent with no stored absolute cap (e.g. codex) exports it EMPTY,
+# so the staleness features degrade to "cap unknown" rather than misreport. The
+# `-` (not `:-`) default keeps Claude's pattern for a standalone slots call.
+slot_refresh_exp() {
+  _c=$1/$CRED_FILE
+  [ -s "$_c" ] || return 1
+  _re=${VALET_KEY_EXP_PATTERN-'.*"refreshTokenExpiresAt":\([0-9][0-9]*\).*'}
+  [ -n "$_re" ] || return 1
+  _v=$(sed -n "s/$_re/\1/p" "$_c" | head -1)
+  [ -n "$_v" ] || return 1
+  printf '%s\n' "$_v"
+}
+
+days_until() { echo $(( ($1 - $(date +%s) * 1000) / 86400000 )); }
+
+human_ago() {
+  _a=$1
+  if   [ "$_a" -lt 60 ];    then echo "${_a}s"
+  elif [ "$_a" -lt 3600 ];  then echo "$((_a / 60))m"
+  elif [ "$_a" -lt 86400 ]; then echo "$((_a / 3600))h"
+  else                           echo "$((_a / 86400))d"; fi
+}
+
+# "<warm> <total>" for a pool dir (warm = a slot holding a real cred file).
+pool_counts() {
+  _t=0; _w=0
+  for _s in "$1"/slot-*; do
+    [ -d "$_s" ] || continue
+    _t=$((_t + 1))
+    [ -s "$_s/$CRED_FILE" ] && _w=$((_w + 1))
+  done
+  echo "$_w $_t"
+}
+
+cmd_provision() {
+  id=${1:?pool id required}; base=${2:?base dir required}; n=${3:?N required}
+  [ -d "$base" ] || die "base dir absent: $base"
+  case "$n" in ''|*[!0-9]*) die "N must be a number: $n" ;; esac
+  pd=$(pool_dir "$id"); mkdir -p "$pd"
+  chmod 700 "$POOL_ROOT" 2>/dev/null || true
+  i=1
+  while [ "$i" -le "$n" ]; do
+    slot=$pd/slot-$i; mkdir -p "$slot"; chmod 700 "$slot"
+    seed_slot "$base" "$slot"; i=$((i + 1))
+  done
+  echo "valet-key-slots: $id pool ready ($n slots) at $pd"
+}
+
+cmd_lease() {
+  id=${1:?pool id required}; base=${2:?base dir required}; holder=${3:-$$}
+  SLOTS_QUIET=1                        # self-heal quietly on the hot path
+  pd=$(pool_dir "$id")
+  [ -d "$pd" ] || { echo "$base"; return 0; }   # no pool -> shared base
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    lock=$slot/.lease
+    if mkdir "$lock" 2>/dev/null; then
+      echo "$holder" > "$lock/pid"
+      seed_slot "$base" "$slot"; echo "$slot"; return 0
+    fi
+    # occupied: reclaim only when the recorded holder is provably dead. An
+    # empty/absent pid means a claim is mid-flight: treat as busy, never steal.
+    hp=$(cat "$lock/pid" 2>/dev/null || true)
+    if [ -n "$hp" ] && ! pid_live "$hp"; then
+      rm -rf "$lock"
+      if mkdir "$lock" 2>/dev/null; then
+        echo "$holder" > "$lock/pid"
+        seed_slot "$base" "$slot"; echo "$slot"; return 0
+      fi
+    fi
+  done
+  warn "all slots leased for $id; using shared base (races)"
+  echo "$base"
+}
+
+# run the real agent on a slot so the user signs in; shared by warm and force.
+# $VALET_KEY_AGENT_BIN / $VALET_KEY_CRED_ENV are set by the engine from the
+# adapter, as
+# are the generic knobs: $VALET_KEY_UNSET_ENV (env to scrub so the stored
+# login is
+# used, e.g. ANTHROPIC_API_KEY/OPENAI_API_KEY) and $VALET_KEY_LOGIN_ARGS
+# (extra args
+# to reach the login flow, e.g. codex's `login`; empty = run the agent bare).
+_run_on_slot() {
+  [ -n "${VALET_KEY_AGENT_BIN:-}" ] ||
+    die "no agent binary (engine must set it)"
+  echo "valet-key-slots: sign in, then exit to record it." >&2
+  for _u in ${VALET_KEY_UNSET_ENV:-}; do unset "$_u" 2>/dev/null || true; done
+  # shellcheck disable=SC2086  # LOGIN_ARGS is a deliberately-split arg list
+  env "${VALET_KEY_CRED_ENV:?}=$1" "$VALET_KEY_AGENT_BIN" \
+    ${VALET_KEY_LOGIN_ARGS:-} || true
+}
+
+cmd_warm() {
+  id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || die "no pool for $id ($pd); provision it first"
+  counts=$(pool_counts "$pd"); warm0=${counts% *}; total=${counts#* }
+  target=""
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    seed_slot "$base" "$slot"
+    [ -s "$slot/$CRED_FILE" ] || { target=$slot; break; }
+  done
+  if [ -z "$target" ]; then
+    echo "valet-key-slots: $id pool FULL -- all $total warm (use 'force')."
+    return 0
+  fi
+  echo "valet-key-slots: $id -- $warm0/$total warm; warming ${target##*/}."
+  _run_on_slot "$target"
+  warm1=$(pool_counts "$pd"); warm1=${warm1% *}
+  if [ "$warm1" -gt "$warm0" ]; then
+    echo "valet-key-slots: $id -- now $warm1/$total warm (was $warm0)."
+  else
+    echo "valet-key-slots: $id -- still $warm0/$total; ${target##*/} cold."
+  fi
+}
+
+cmd_login_check() {
+  id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || die "no pool for $id ($pd)"
+  counts=$(pool_counts "$pd"); warm=${counts% *}; total=${counts#* }
+  echo "valet-key-slots: $id -- $warm/$total warm (cap-warn ${STALE_DAYS}d)"
+  _now=$(date +%s)
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    [ -s "$slot/$CRED_FILE" ] || continue
+    printf '%s\t%s\t%s\n' "$(mtime "$slot/$CRED_FILE")" "${slot##*/}" \
+      "$(slot_refresh_exp "$slot" || echo 0)"
+  done | sort -n | while IFS="$TAB" read -r _m _s _e; do
+    _run="cap unknown"; _mark=""
+    if [ "$_e" -gt 0 ] 2>/dev/null; then
+      _d=$(days_until "$_e"); _run="${_d}d to cap"
+      [ "$_d" -lt "$STALE_DAYS" ] && _mark="  <- re-login soon"
+    fi
+    echo "  $_s  rotated $(human_ago $((_now - _m))) ago, $_run$_mark"
+  done
+}
+
+cmd_force() {
+  id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || die "no pool for $id ($pd)"
+  oldest=""; omt=0
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    [ -s "$slot/$CRED_FILE" ] || continue
+    _m=$(mtime "$slot/$CRED_FILE")
+    if [ -z "$oldest" ] || [ "$_m" -lt "$omt" ]; then oldest=$slot; omt=$_m; fi
+  done
+  if [ -z "$oldest" ]; then
+    echo "valet-key-slots: $id -- no warm slots to refresh."; return 0
+  fi
+  _now=$(date +%s); _ago=$(human_ago $((_now - omt)))
+  echo "valet-key-slots: $id -- refreshing ${oldest##*/} (rotated $_ago ago)."
+  _run_on_slot "$oldest"
+  [ "$(mtime "$oldest/$CRED_FILE")" -gt "$omt" ] \
+    && echo "valet-key-slots: $id -- ${oldest##*/} refreshed." \
+    ||
+      echo "valet-key-slots: $id -- ${oldest##*/} unchanged (not re-logged in)."
+}
+
+cmd_login_stale() {
+  id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || die "no pool for $id ($pd)"
+  _did=0
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    [ -s "$slot/$CRED_FILE" ] || continue
+    _e=$(slot_refresh_exp "$slot") || continue
+    [ "$(days_until "$_e")" -lt "$STALE_DAYS" ] || continue
+    echo "valet-key-slots: ${slot##*/} within ${STALE_DAYS}d of cap; re-login."
+    _run_on_slot "$slot"; _did=$((_did + 1))
+  done
+  if [ "$_did" -eq 0 ]; then
+    echo "valet-key-slots: $id -- none within ${STALE_DAYS}d of cap."
+  fi
+  return 0
+}
+
+# stale: across ALL pools, list every WARM slot within STALE_DAYS of its cap --
+# "<id>/<slot> <days>d" a line. READ-ONLY, launches nothing; the attention scan
+# calls it cheaply. Pools nest two levels (<agent>/<profile>).
+cmd_stale() {
+  [ -d "$POOL_ROOT" ] || return 0
+  for pd in "$POOL_ROOT"/*/*; do
+    [ -d "$pd" ] || continue
+    id=${pd#"$POOL_ROOT"/}
+    for slot in "$pd"/slot-*; do
+      [ -d "$slot" ] || continue
+      [ -s "$slot/$CRED_FILE" ] || continue
+      _e=$(slot_refresh_exp "$slot") || continue
+      _d=$(days_until "$_e"); [ "$_d" -lt "$STALE_DAYS" ] || continue
+      printf '%s/%s %sd\n' "$id" "${slot##*/}" "$_d"
+    done
+  done
+}
+
+cmd_sync() {
+  id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || die "no pool for $id ($pd)"
+  for slot in "$pd"/slot-*; do [ -d "$slot" ] && seed_slot "$base" "$slot"; done
+  echo "valet-key-slots: synced $id pool"
+}
+
+cmd_check() {
+  id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || { echo "valet-key-slots: $id pool MISSING ($pd)"; return 1; }
+  total=0; warm=0; leased=0; drift=0
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    total=$((total + 1))
+    [ -s "$slot/$CRED_FILE" ] && warm=$((warm + 1))
+    if [ -d "$slot/.lease" ]; then
+      hp=$(cat "$slot/.lease/pid" 2>/dev/null || true)
+      pid_live "$hp" && leased=$((leased + 1))
+    fi
+    for e in "$slot"/* "$slot"/.*; do
+      case "${e##*/}" in .|..) continue ;; esac
+      if [ -L "$e" ] && [ ! -e "$e" ]; then
+        echo "valet-key-slots: dangling link: $e" >&2; drift=$((drift + 1))
+      fi
+    done
+  done
+  echo "valet-key-slots: $id -- $total slots, $warm warm, $leased leased"
+  if [ "$drift" -ne 0 ]; then
+    echo "valet-key-slots: $id has $drift dangling link(s)" >&2; return 1
+  fi
+  return 0
+}
+
+case "${1:-}" in
+  provision)    shift; cmd_provision "$@" ;;
+  lease)        shift; cmd_lease "$@" ;;
+  warm)         shift; cmd_warm "$@" ;;
+  login-check)  shift; cmd_login_check "$@" ;;
+  force)        shift; cmd_force "$@" ;;
+  login-stale)  shift; cmd_login_stale "$@" ;;
+  stale)        shift; cmd_stale "$@" ;;
+  sync)         shift; cmd_sync "$@" ;;
+  check)        shift; cmd_check "$@" ;;
+  *) echo "valet-key slots: unknown verb '${1:-}'" >&2; exit 2 ;;
+esac

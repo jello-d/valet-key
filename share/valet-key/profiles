@@ -1,0 +1,12 @@
+# valet-key profiles -- the built-in cwd resolver (a $VALET_KEY_CONFIG/context
+# `resolve`
+# hook overrides this entirely). Copy to ~/.config/valet-key/profiles and edit.
+#
+# Lines: <profile> <dir>. When the context (git root, else $PWD) sits under
+# <dir>, that profile is chosen; first match wins. An unmatched context falls
+# back to the default profile ("personal"). A leading ~ expands to $HOME.
+#
+# Example: anything under ~/work runs the "work" profile (its own config +
+# slot pool); everything else is personal.
+#
+#   work  ~/work

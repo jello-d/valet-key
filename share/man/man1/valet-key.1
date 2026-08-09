@@ -1,0 +1,357 @@
+.TH VALET-KEY 1 "2026-08-04" "valet-key 0.1" "User Commands"
+.SH NAME
+valet-key \- profile-aware, concurrent-safe launcher for coding agents
+.SH SYNOPSIS
+.B claude
+.RI [ agent-args ...]
+.br
+.B valet-key run
+.I agent
+.RI [ agent-args ...]
+.br
+.B valet-key
+.I command
+.RI [ args ...]
+.SH DESCRIPTION
+.B valet-key
+wraps a coding agent (Claude Code, and others via adapters) so that every
+launch is placed in the right
+.B profile
+(a logical identity such as
+.IR work ,
+.IR personal ,
+.IR client-a ),
+guarded for coherence, and given an isolated credential slot before the real
+agent is exec'd.
+.PP
+You do not normally type
+.BR valet-key .
+You install per-agent
+.B shims
+\(em symlinks named
+.BR claude ,
+.BR codex ,
+.BR gemini ,
+.RB \&... \" ...
+that point at the engine \(em and put the shims directory first on
+.BR PATH .
+The engine reads its own invoked name
+.RB ( $0 )
+to pick the agent (the busybox / git multi-call pattern). Invoked as
+.B valet-key
+it is the management CLI.
+.PP
+Each launch runs four steps:
+.IP 1. 3
+.B resolve
+the active profile from the current directory / context;
+.IP 2. 3
+.B guard
+coherence (proceed, warn, or refuse) before launching;
+.IP 3. 3
+.B lease
+a private credential slot from the profile's pool (pooled agents only; a
+poolless agent uses the profile's directory directly), so concurrent sessions
+never share one rotating refresh token;
+.IP 4. 3
+.B exec
+the real agent with the slot as its config directory.
+.PP
+The concurrency problem it solves: some agents keep a single credentials file
+whose OAuth refresh token is single-use and rotates on every refresh. Two
+sessions sharing it invalidate each other, forcing periodic re-logins. A pool
+of thin slot directories \(em each sharing the account's state but owning a
+private, independently-logged-in credentials file \(em removes the race. An
+agent whose refresh token is stable, or which uses no rotating credential, is
+.B poolless
+\(em valet-key gives it profile isolation without a pool.
+.SH COMMANDS
+.SS Running
+.TP
+.B claude " [" \fIargs\fR ...]
+Run Claude in the resolved profile on a leased slot (the shim form). Any
+installed shim behaves the same for its agent.
+.TP
+.B valet-key run \fIagent\fR " [" \fIargs\fR ...]
+The same, naming the agent explicitly.
+.SS Pools
+.TP
+.B valet-key provision \fIagent\fR " [" \fIprofile\fR "] [" \fIN\fR ]
+Create or refresh a slot pool of
+.I N
+slots (default 10) for
+.IR agent / profile
+(profile defaults to the default profile). Slots ship cold \(em the login is
+lazy; the first session to reach a cold slot logs in once.
+.TP
+.B valet-key login \fR[\fIaction\fR] [\fIagent\fR] [\fIprofile\fR]
+Manage logins for the resolved (or named) pool. The
+.I action
+is one of
+.BR warm ", " check ", " force ", " stale .
+.B warm
+(default) logs into the next cold slot;
+.B check
+lists warm/total and each slot's rotation age and days-to-cap;
+.B force
+re-logs the oldest warm slot;
+.B stale
+re-logs every slot within
+.B VALET_KEY_SLOT_STALE_DAYS
+of its cap.
+.TP
+.B valet-key stale
+Across all pools, list every warm slot within
+.B VALET_KEY_SLOT_STALE_DAYS
+of its hard OAuth cap, one
+.RI < id >/< slot >
+.IR days d
+per line. Read-only; launches nothing. Its line count is a natural signal for a
+login-reminder banner.
+.TP
+.B valet-key check \fIagent\fR " [" \fIprofile\fR ]
+Audit a pool: report slot / warm / leased counts and exit non-zero on structural
+drift (a missing pool or a dangling shared link).
+.TP
+.B valet-key slots \fIverb\fR " [" \fIargs\fR ...]
+Escape hatch to the raw slot-pool library (see
+.BR FILES ).
+.SS Shims
+.TP
+.B valet-key shim \fIagent\fR ...
+Create a shim for each named agent in the shims directory \(em a symlink to the
+engine, so invoking that name routes here. Warns if the shims directory is not
+first on
+.BR PATH .
+.TP
+.B valet-key unshim \fIagent\fR ...
+Remove those shims.
+.TP
+.B valet-key shims
+List the current shims.
+.TP
+.B valet-key init
+Print the shell line that prepends the shims directory to
+.BR PATH .
+Add it to your profile, e.g.
+.RB ' "eval \e$(valet-key init)" '.
+.TP
+.B valet-key shims-dir
+Print the shims directory.
+.TP
+.B valet-key rehash
+Re-point every existing shim at the current engine (after moving valet-key).
+.SH PROFILES
+A
+.B profile
+is a logical identity, not an agent path. Each agent
+.B adapter
+grounds it in that agent's config directory: the default profile maps to the
+adapter's base directory, any other
+.I P
+to
+.RI < base >- P .
+For Claude Code that is
+.I ~/.claude
+for
+.I personal
+and
+.I ~/.claude-work
+for
+.IR work .
+The default profile is
+.I personal
+.RB ( VALET_KEY_DEFAULT_PROFILE
+overrides).
+.PP
+A profile may instead be pinned to an explicit directory by a
+.RI < agent >
+.RI < profile >
+.RI < dir >
+line in
+.IR $VALET_KEY_CONFIG/dirs ,
+overriding the
+.RI < base >- P
+default \(em for a config dir that must live at a specific path, or a tool
+whose environment variable points at a home rather than a config directory.
+.SH THE CONTEXT SEAM
+Two optional hooks let an integrator supply richer logic than the built-in
+directory rules. Without them, valet-key runs a single
+.I personal
+profile and always proceeds.
+.TP
+.B $VALET_KEY_CONFIG/context resolve
+Print the active profile name. Overrides the built-in resolver (see
+.BR FILES ,
+.IR profiles ).
+.TP
+.B $VALET_KEY_CONFIG/context guard \fIprofile\fR
+Decide coherence for the resolved profile: exit
+.B 0
+to proceed,
+.B 2
+to warn and continue,
+.B 1
+to refuse and abort. The hook owns the message (its standard error passes
+through). This is where a hard boundary \(em a zero-data-retention work tree,
+say \(em says no.
+.PP
+The adapter says
+.I how
+a profile maps to config; the seams say
+.I which
+profile and
+.I whether it is allowed.
+Enforcement of a real boundary lives in the integrator, never in valet-key.
+.SH ADAPTERS
+An adapter is a shell fragment under
+.I libexec/valet-key/adapters/<agent>
+sourced by the engine. It declares the config-dir environment variable
+.RB ( ADAPTER_ENV ),
+the base config directory
+.RB ( ADAPTER_BASE ),
+whether the agent needs slot isolation
+.RB ( ADAPTER_SLOTS ),
+the slot file policy
+.RB ( ADAPTER_CRED_FILE ,
+.BR ADAPTER_STATIC_FILES ,
+.BR ADAPTER_SEED_FILES ),
+the login and cap knobs
+.RB ( ADAPTER_UNSET_ENV ,
+env scrubbed so a stray API key cannot override the stored login;
+.BR ADAPTER_LOGIN_ARGS ,
+extra args to reach the login flow when warming;
+.BR ADAPTER_EXP_PATTERN ,
+the slot cap pattern, empty for "cap unknown";
+.BR ADAPTER_QUIET ),
+and functions
+.B adapter_realbin
+(find the real binary, skipping the shim) and
+.B adapter_preexec
+(launch-time environment). Add an agent by dropping in an adapter.
+.PP
+Bundled adapters:
+.B claude
+and
+.B codex
+are pooled (single-use OAuth token);
+.B gemini
+is poolless (stable token, profile isolation only); and
+.B gcloud
+is poolless too \(em a non-agent identity CLI, showing valet-key generalizes
+beyond coding agents.
+.SH ENVIRONMENT
+.TP
+.B VALET_KEY_CONFIG
+Config directory. Default
+.IR $XDG_CONFIG_HOME/valet-key ,
+else
+.IR ~/.config/valet-key .
+.TP
+.B VALET_KEY_SHIMS_DIR
+Where shims live. Default
+.IR $XDG_DATA_HOME/valet-key/shims ,
+else
+.IR ~/.local/share/valet-key/shims .
+.TP
+.B VALET_KEY_DEFAULT_PROFILE
+The unmatched fallback profile. Default
+.IR personal .
+.TP
+.B VALET_KEY_POOL_ROOT
+Slot-pool root. Default
+.IR ~/.valet-key-pool .
+.TP
+.B VALET_KEY_SLOT_STALE_DAYS
+Cap-warning window for
+.B stale
+and
+.BR "login stale" .
+Default 7.
+.TP
+.BI < AGENT >_BIN
+Override an adapter's resolved binary (odd install or testing):
+.BR CLAUDE_BIN ", " CODEX_BIN ", " GEMINI_BIN ", " GCLOUD_BIN .
+The pool size is the
+.I N
+argument to
+.BR provision ,
+not an environment variable.
+.SH FILES
+.TP
+.I bin/valet-key
+The engine. Self-locates its
+.I libexec
+and
+.I share
+as siblings under one prefix.
+.TP
+.I libexec/valet-key/slots
+The credential-slot pool library.
+.TP
+.I libexec/valet-key/adapters/<agent>
+Per-agent adapters.
+.TP
+.I $VALET_KEY_CONFIG/context
+The optional integrator hook
+.RB ( resolve ", " guard ).
+.TP
+.I $VALET_KEY_CONFIG/profiles
+The built-in directory resolver: lines
+.RI < profile >
+.RI < dir >;
+when the context (git root, else
+.BR $PWD )
+sits under
+.IR dir ,
+that profile is chosen (first match wins). A hook overrides this entirely.
+.TP
+.I $VALET_KEY_CONFIG/dirs
+Per-profile config-dir overrides: lines
+.RI < agent >
+.RI < profile >
+.RI < dir >,
+pinning that pool's directory instead of the
+.RI < base >- profile
+default.
+.TP
+.I $VALET_KEY_POOL_ROOT/<agent>/<profile>/slot-N
+The slot directories.
+.SH EXAMPLES
+Set up standalone with two profiles:
+.PP
+.nf
+.RS
+eval "$(valet-key init)"          # shims dir first on PATH
+valet-key shim claude
+printf 'work ~/work\en' > ~/.config/valet-key/profiles
+valet-key provision claude personal
+valet-key provision claude work
+.RE
+.fi
+.PP
+Now
+.B claude
+run under
+.I ~/work
+uses the
+.I work
+profile and its own slot pool; anywhere else,
+.IR personal .
+.PP
+Warm a couple of slots so the first sessions do not each prompt a login:
+.PP
+.nf
+.RS
+valet-key login          # warm the next cold slot
+valet-key login          # and another
+valet-key login check    # warm/total and days-to-cap
+.RE
+.fi
+.SH SEE ALSO
+.BR tmux (1),
+.BR mux (1)
+.PP
+valet-key is developed alongside, but independent of,
+.BR mux :
+mux merely launches an agent shim; there is no code dependency.

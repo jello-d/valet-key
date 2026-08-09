@@ -1,0 +1,49 @@
+# valet-key adapter: Google Cloud CLI (gcloud).
+#
+# The first NON-agent adapter: gcloud is not a coding agent, but it fits
+# valet-key's
+# engine exactly -- it stores its whole identity (creds, ADC, config) under one
+# dir, $CLOUDSDK_CONFIG, which is precisely what valet-key selects per profile.
+# So
+# `gcloud` routes through the same resolve+guard as claude (the work/personal
+# group-bit hook is the single source of truth) and picks the matching config
+# dir. This is the proof that valet-key is a general profile-aware identity
+# launcher, not just an agent front-end.
+#
+# No credential-slot pool: gcloud has no single-use refresh token that rotates
+# per session (the race valet-key's pools exist to solve), so ADAPTER_SLOTS
+# stays 0
+# and each profile maps straight to its config dir. The work profile's dir is
+# KERNEL-SEALED (root:<work group> 2770 + default ACL, by modules/work-guard),
+# so corp cloud creds are reachable only from inside the work group -- stronger
+# than an env-only split, and the reason gcloud gets a sealed dir where claude's
+# ~/.claude-work is merely env-selected.
+
+ADAPTER_ENV=CLOUDSDK_CONFIG        # the whole gcloud identity is this one dir
+ADAPTER_BASE=$HOME/.config/gcloud  # personal (gcloud's own default); the work
+                                   # profile -> <base>-work (sealed, see below)
+ADAPTER_SLOTS=0                    # no rotating refresh token -> no slot pool
+ADAPTER_QUIET=1                    # gcloud is scripted; suppress the per-call
+                                   # 'valet-key: ...' line (VALET_KEY_VERBOSE
+                                   # overrides)
+
+# The REAL gcloud, skipping the valet-key shim ($VALET_KEY_SELF, the resolved
+# engine).
+# apt (google-cloud-cli) installs it at /usr/bin/gcloud; else FOLLOW PATH in the
+# user's order. $GCLOUD_BIN overrides (odd install / test).
+adapter_realbin() {
+  [ -n "${GCLOUD_BIN:-}" ] && { printf '%s\n' "$GCLOUD_BIN"; return 0; }
+  for c in /usr/bin/gcloud /usr/local/bin/gcloud; do
+    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$c"; return 0; }
+  done
+  IFS=:; for d in $PATH; do
+    [ -x "$d/gcloud" ] &&
+      [ "$(readlink -f "$d/gcloud")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$d/gcloud"; return 0; }
+  done
+  return 1
+}
+
+# gcloud needs no launch-time env scrubbing (unlike claude's API-key unset).
+adapter_preexec() { :; }

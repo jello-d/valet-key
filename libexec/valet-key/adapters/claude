@@ -1,0 +1,52 @@
+# valet-key adapter: Claude Code.
+#
+# Sourced by the engine (bin/valet-key). Declares how this agent stores its
+# config,
+# which file the slot pool must isolate, how to find the real binary, and any
+# launch-time env. The engine reads the ADAPTER_* vars and calls adapter_*().
+
+ADAPTER_ENV=CLAUDE_CONFIG_DIR      # env var pointing the agent at a config
+ADAPTER_BASE=$HOME/.claude         # the default profile's config dir
+ADAPTER_SLOTS=1                    # Claude's OAuth refresh token rotates
+
+# Slot file policy (see libexec/valet-key/slots). Claude Code specifics.
+ADAPTER_CRED_FILE=.credentials.json
+ADAPTER_STATIC_FILES='settings.json settings.local.json CLAUDE.md'
+ADAPTER_SEED_FILES=.claude.json
+ADAPTER_PROC_MATCH=claude          # cmdline match for the dead-slot reclaim
+
+# ANTHROPIC_API_KEY silently overrides the OAuth login, so a slot's per-session
+# credential never takes effect while it is set: unset it at launch AND before a
+# slot login. Declared (not unset in adapter_preexec) so the slots lib honours
+# it for `valet-key login` too.
+ADAPTER_UNSET_ENV=ANTHROPIC_API_KEY
+# A slot's hard cap: Claude records an absolute refresh-token expiry (ms epoch);
+# the slots lib pulls it with this sed pattern to warn before a slot goes cold.
+ADAPTER_EXP_PATTERN='.*"refreshTokenExpiresAt":\([0-9][0-9]*\).*'
+
+# The REAL Claude Code binary. Mirrors the old tackup wrapper EXACTLY so
+# valet-key
+# resolves the identical binary: prefer the odd-install spots, else FOLLOW PATH
+# (respecting the user's order), always skipping the valet-key shim
+# ($VALET_KEY_SELF,
+# the resolved engine). $CLAUDE_BIN overrides (odd install / test).
+adapter_realbin() {
+  [ -n "${CLAUDE_BIN:-}" ] && { printf '%s\n' "$CLAUDE_BIN"; return 0; }
+  for c in "$HOME/.npm-global/bin/claude" /usr/local/bin/claude; do
+    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$c"; return 0; }
+  done
+  IFS=:; for d in $PATH; do
+    [ -x "$d/claude" ] &&
+      [ "$(readlink -f "$d/claude")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$d/claude"; return 0; }
+  done
+  return 1
+}
+
+# Launch-time environment. Claude via apt lags and nags about updates -- silence
+# it. (ANTHROPIC_API_KEY is scrubbed via ADAPTER_UNSET_ENV, honoured by both the
+# exec path and `valet-key login`.)
+adapter_preexec() {
+  DISABLE_AUTOUPDATER=1; export DISABLE_AUTOUPDATER
+}

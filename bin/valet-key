@@ -1,0 +1,274 @@
+#!/bin/sh
+# valet-key -- a profile-aware, concurrent-safe launcher for coding agents.
+#
+# You run `claude` / `gemini` (per-agent SHIMS that symlink to this engine); the
+# engine reads its own invoked name ($0) to pick the agent, resolves which
+# PROFILE applies (work / personal / client-a ...), guards coherence, leases an
+# isolated credential slot, and execs the real agent. Invoked as `valet-key` it
+# is the management CLI.
+#
+#   claude [args]            run Claude in the resolved profile, on a lease slot
+#   valet-key run <agent> [args]    the same, named explicitly
+#   valet-key provision <agent> [profile] [N]    create/refresh a pool (N=10)
+#   valet-key login [warm|check|force|stale] [agent] [profile]    logins
+#   valet-key stale              all pools: warm slots near their cap
+#   valet-key check <agent> [profile]    audit a pool
+#   valet-key slots <verb> ...   raw slot-pool escape hatch
+#
+# Shims (how `claude`/`gemini` come to route here -- a dir of symlinks to this
+# engine, first on PATH so it shadows the real binary; the pyenv/rbenv pattern):
+#   valet-key shim <agent>...    create shim(s) in the shims dir (intercept)
+#   valet-key unshim <agent>...  remove shim(s)
+#   valet-key shims              list current shims
+#   valet-key init               print the PATH line for the shims dir (eval it)
+#   valet-key shims-dir          print the shims dir
+#   valet-key rehash             re-point existing shims at this engine
+#
+# SEAMS (optional; default is a single "personal" profile, proceed):
+#   $VALET_KEY_CONFIG/context resolve          -> the active profile name
+#   $VALET_KEY_CONFIG/context guard <profile>  -> 0 ok / 2 warn / 1 refuse (msg)
+#   $VALET_KEY_CONFIG/profiles  -> "<profile> <matchdir>" cwd-resolver lines
+#                                  (the resolve hook, if present, wins)
+#
+# POSIX sh (dash). Non-privileged. tackup fills the seams; standalone it just
+# works with one profile.
+set -eu
+
+# --- self-location: our libexec + share, from this script's real path --------
+# $0 may be a bare name (PATH lookup), relative, or absolute, and reaches us
+# through the shim symlink; resolve it. bin/ libexec/ share/ are siblings.
+_argv0=${0##*/}                    # the name we were INVOKED as (the shim key)
+_self=$0
+case $_self in
+*/*) ;;
+*) _self=$(command -v -- "$_self" 2>/dev/null || echo "$_self") ;;
+esac
+VALET_KEY_SELF=$(readlink -f -- "$_self" 2>/dev/null || echo "$_self")
+export VALET_KEY_SELF          # adapters skip this path finding the real binary
+LIBEXEC=${VALET_KEY_SELF%/*}/../libexec/valet-key
+SLOTS="$LIBEXEC/slots"
+VALET_KEY_CONFIG=${VALET_KEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}\
+/valet-key}
+DEFAULT_PROFILE=${VALET_KEY_DEFAULT_PROFILE:-personal}
+# Where the shims live -- a dir the user puts FIRST on PATH so a shim shadows
+# the real binary (no collision; distinct from ~/.local/bin). An integrator can
+# point this at a dir it already owns first (tackup: ~/bin).
+_shimdef=${XDG_DATA_HOME:-$HOME/.local/share}/valet-key/shims
+VALET_KEY_SHIMS_DIR=${VALET_KEY_SHIMS_DIR:-$_shimdef}
+
+die() { echo "valet-key: $*" >&2; exit 1; }
+
+# --- adapter -----------------------------------------------------------------
+# Load agent <name>'s adapter (sets ADAPTER_*), and export the slot-pool file
+# policy the slots lib reads. Fail loud on an unknown agent.
+load_adapter() {
+  _a=$LIBEXEC/adapters/$1
+  [ -r "$_a" ] || die "no adapter for agent '$1' ($_a)"
+  AGENT=$1
+  . "$_a"
+  # The slot-pool vars are only read when ADAPTER_SLOTS=1; a non-agent adapter
+  # (e.g. gcloud, slots=0) legitimately omits them, so default to empty here.
+  export VALET_KEY_CRED_FILE=${ADAPTER_CRED_FILE:-}
+  export VALET_KEY_STATIC_FILES=${ADAPTER_STATIC_FILES:-}
+  export VALET_KEY_SEED_FILES=${ADAPTER_SEED_FILES:-}
+  export VALET_KEY_PROC_MATCH=${ADAPTER_PROC_MATCH:-}
+  export VALET_KEY_CRED_ENV=$ADAPTER_ENV
+  # Generic per-agent knobs (empty = the neutral default): env vars to scrub at
+  # launch/login, extra args for the login command, and the sed pattern the
+  # slots lib reads a slot's hard-cap expiry with.
+  export VALET_KEY_UNSET_ENV=${ADAPTER_UNSET_ENV:-}
+  export VALET_KEY_LOGIN_ARGS=${ADAPTER_LOGIN_ARGS:-}
+  export VALET_KEY_EXP_PATTERN=${ADAPTER_EXP_PATTERN:-}
+}
+
+# config dir for <profile> with this agent. A per-(agent, profile) OVERRIDE in
+# $VALET_KEY_CONFIG/dirs wins ("<agent> <profile> <dir>" lines) -- so an
+# integrator
+# can pin a dir that must live somewhere specific (a sealed location, or a tool
+# like gemini whose env points at a HOME not a config dir). Else the default:
+# the base for the default profile, <base>-<profile> otherwise.
+profile_dir() {
+  if [ -r "$VALET_KEY_CONFIG/dirs" ]; then
+    while read -r _oa _op _od _rest; do
+      case "$_oa" in ''|'#'*) continue ;; esac
+      [ "$_oa" = "$AGENT" ] && [ "$_op" = "$1" ] || continue
+      case "$_od" in "~/"*) _od=$HOME/${_od#\~/} ;; '~') _od=$HOME ;; esac
+      printf '%s\n' "$_od"; return 0
+    done < "$VALET_KEY_CONFIG/dirs"
+  fi
+  if [ "$1" = "$DEFAULT_PROFILE" ]; then printf '%s\n' "$ADAPTER_BASE"
+  else printf '%s\n' "$ADAPTER_BASE-$1"; fi
+}
+
+pool_id() { printf '%s/%s\n' "$AGENT" "$1"; }   # <agent>/<profile>
+
+# --- the resolve seam: which profile for the current context? ----------------
+# Hook wins; else the built-in cwd matcher over $VALET_KEY_CONFIG/profiles;
+# else the
+# default profile. The context is the git root if any, else $PWD.
+here_dir() {
+  _r=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  ( cd "${_r:-$PWD}" 2>/dev/null && pwd -P ) || printf '%s\n' "$PWD"
+}
+resolve_profile() {
+  if [ -x "$VALET_KEY_CONFIG/context" ]; then
+    _p=$("$VALET_KEY_CONFIG/context" resolve 2>/dev/null || true)
+    [ -n "$_p" ] && { printf '%s\n' "$_p"; return 0; }
+  fi
+  if [ -r "$VALET_KEY_CONFIG/profiles" ]; then
+    _h=$(here_dir)
+    # "<profile> <matchdir>"; first dir the context sits under wins.
+    while read -r _prof _dir _rest; do
+      case "$_prof" in ''|'#'*) continue ;; esac
+      [ -n "$_dir" ] || continue
+      case "$_dir" in "~/"*) _dir=$HOME/${_dir#\~/} ;; '~') _dir=$HOME ;; esac
+      _dir=$( ( cd "$_dir" 2>/dev/null && pwd -P ) || true )
+      [ -n "$_dir" ] || continue
+      case "$_h/" in "$_dir"/*) printf '%s\n' "$_prof"; return 0 ;; esac
+    done < "$VALET_KEY_CONFIG/profiles"
+  fi
+  printf '%s\n' "$DEFAULT_PROFILE"
+}
+
+# --- the guard seam: proceed / warn / refuse for (profile, context) ----------
+# Hook decides; no hook -> proceed. Exit: 0 ok, 2 warn (print, continue), 1
+# refuse (print, abort). The hook owns the message (its stderr passes through).
+guard_check() {   # profile
+  [ -x "$VALET_KEY_CONFIG/context" ] || return 0
+  # `|| _g=$?` so a non-zero exit does NOT trip set -e before we read it.
+  _g=0; "$VALET_KEY_CONFIG/context" guard "$1" || _g=$?
+  case $_g in
+    0|2) return 0 ;;                     # ok, or warn (hook already printed)
+    *)   exit 1 ;;                       # refuse (hook already printed)
+  esac
+}
+
+# --- run an agent: resolve -> guard -> config dir -> slot -> exec -------------
+run_agent() {
+  load_adapter "$1"; shift
+  _profile=$(resolve_profile)
+  guard_check "$_profile"
+  _base=$(profile_dir "$_profile")
+  _cfg=$_base
+  if [ "${ADAPTER_SLOTS:-0}" = 1 ]; then
+    _leased=$("$SLOTS" lease "$(pool_id "$_profile")" "$_base" $$ 2>/dev/null) \
+      || _leased=""
+    [ -n "$_leased" ] && _cfg=$_leased
+  fi
+  _bin=$(adapter_realbin) || die "$AGENT: real binary not found"
+  adapter_preexec
+  # Scrub any env the adapter declared as an override of its stored credential
+  # (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY) so the slot's login takes effect.
+  for _u in ${VALET_KEY_UNSET_ENV:-}; do unset "$_u"; done
+  # Ensure the config dir exists: harmless for agents that create their own, and
+  # required for those that error on a missing dir (codex canonicalises it).
+  mkdir -p "$_cfg" 2>/dev/null || true
+  export "$ADAPTER_ENV=$_cfg"
+  # Announce the resolution, unless the adapter is quiet (a scripted tool like
+  # gcloud, whose stderr callers parse); VALET_KEY_VERBOSE forces it back on.
+  if [ "${ADAPTER_QUIET:-0}" != 1 ] || [ -n "${VALET_KEY_VERBOSE:-}" ]; then
+    printf 'valet-key: %s profile=%s config=%s\n' \
+      "$AGENT" "$_profile" "$_cfg" >&2
+  fi
+  exec "$_bin" "$@"
+}
+
+# --- management --------------------------------------------------------------
+# provision/login resolve the pool (agent, profile) then hand id+base to slots,
+# also exporting the real binary for the interactive login verbs.
+m_provision() {
+  load_adapter "${1:?agent required}"
+  _prof=${2:-$DEFAULT_PROFILE}; _n=${3:-10}
+  "$SLOTS" provision "$(pool_id "$_prof")" "$(profile_dir "$_prof")" "$_n"
+}
+# valet-key login [warm|check|force|stale] [agent] [profile]
+#   warm (default) log into the next COLD slot; check  warm/total + cap ages;
+#   force re-login the OLDEST warm slot; stale re-login slots near the cap.
+m_login() {
+  _act=warm
+  case "${1:-}" in warm|check|force|stale) _act=$1; shift || true ;; esac
+  load_adapter "${1:-claude}"
+  _prof=${2:-$(resolve_profile)}
+  VALET_KEY_AGENT_BIN=$(adapter_realbin) || die "$AGENT: real binary not found"
+  export VALET_KEY_AGENT_BIN
+  _id=$(pool_id "$_prof"); _base=$(profile_dir "$_prof")
+  case $_act in
+    warm)  "$SLOTS" warm        "$_id" "$_base" ;;
+    check) "$SLOTS" login-check  "$_id" "$_base" ;;
+    force) "$SLOTS" force        "$_id" "$_base" ;;
+    stale) "$SLOTS" login-stale  "$_id" "$_base" ;;
+  esac
+}
+m_check() {
+  load_adapter "${1:?agent required}"; _prof=${2:-$DEFAULT_PROFILE}
+  "$SLOTS" check "$(pool_id "$_prof")" "$(profile_dir "$_prof")"
+}
+
+# --- shims: intercept an agent command by name -------------------------------
+# A shim is a symlink named <agent> in the shims dir, pointing at this engine;
+# invoked, its $0 basename is the agent, so run_agent dispatches. The shims dir
+# must be FIRST on PATH (valet-key init) so the shim wins over the real binary.
+m_shim() {
+  [ $# -gt 0 ] || die "usage: valet-key shim <agent>..."
+  mkdir -p "$VALET_KEY_SHIMS_DIR"
+  for _ag in "$@"; do
+    [ -r "$LIBEXEC/adapters/$_ag" ] || die "no adapter for agent '$_ag'"
+    ln -sfn "$VALET_KEY_SELF" "$VALET_KEY_SHIMS_DIR/$_ag"
+    echo "valet-key: shimmed $_ag -> $VALET_KEY_SHIMS_DIR/$_ag"
+    _w=$(command -v "$_ag" 2>/dev/null || true)
+    if [ "$_w" != "$VALET_KEY_SHIMS_DIR/$_ag" ]; then
+      echo "valet-key: note: '$_ag' still resolves to ${_w:-nothing}; put the" \
+           "shims dir first on PATH (eval \"\$(valet-key init)\")." >&2
+    fi
+  done
+}
+m_unshim() {
+  [ $# -gt 0 ] || die "usage: valet-key unshim <agent>..."
+  for _ag in "$@"; do
+    if [ -L "$VALET_KEY_SHIMS_DIR/$_ag" ]; then
+      rm -f "$VALET_KEY_SHIMS_DIR/$_ag"; echo "valet-key: unshimmed $_ag"
+    else echo "valet-key: no shim for '$_ag'" >&2; fi
+  done
+}
+m_shims() {
+  [ -d "$VALET_KEY_SHIMS_DIR" ] || return 0
+  for _s in "$VALET_KEY_SHIMS_DIR"/*; do
+    [ -L "$_s" ] || continue
+    printf '%s -> %s\n' "${_s##*/}" "$(readlink "$_s")"
+  done
+}
+m_rehash() {
+  [ -d "$VALET_KEY_SHIMS_DIR" ] ||
+    { echo "valet-key: no shims dir yet"; return 0; }
+  for _s in "$VALET_KEY_SHIMS_DIR"/*; do
+    [ -L "$_s" ] && ln -sfn "$VALET_KEY_SELF" "$_s"
+  done
+  echo "valet-key: rehashed shims in $VALET_KEY_SHIMS_DIR"
+}
+m_init() { printf 'export PATH="%s:$PATH"\n' "$VALET_KEY_SHIMS_DIR"; }
+
+# Dispatch: invoked as a shim (name != valet-key) -> run that agent. As
+# `valet-key` ->
+# the management CLI.
+if [ "$_argv0" != valet-key ]; then
+  run_agent "$_argv0" "$@"
+fi
+
+_v=${1:-}; [ $# -gt 0 ] && shift || true
+case "$_v" in
+  run)        run_agent "$@" ;;
+  provision)  m_provision "$@" ;;
+  login)      m_login "$@" ;;
+  check)      m_check "$@" ;;
+  stale)      "$SLOTS" stale ;;
+  slots)      "$SLOTS" "$@" ;;
+  shim)       m_shim "$@" ;;
+  unshim)     m_unshim "$@" ;;
+  shims)      m_shims ;;
+  rehash)     m_rehash ;;
+  init)       m_init ;;
+  shims-dir)  printf '%s\n' "$VALET_KEY_SHIMS_DIR" ;;
+  ''|help|-h|--help)
+    sed -n '2,34p' "$VALET_KEY_SELF" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command '$_v' (try: valet-key help)" ;;
+esac

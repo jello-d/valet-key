@@ -1,0 +1,44 @@
+# valet-key adapter: Google Gemini CLI.
+#
+# Sourced by the engine (bin/valet-key). Gemini is POOLLESS: its OAuth refresh
+# token
+# is STABLE (re-pinned on every refresh, unlike the single-use Claude/codex
+# token), so concurrent sessions sharing one login do NOT knock each other out
+# -- no race for a slot pool to solve. valet-key gives it PROFILE isolation only
+# (work vs personal account), like the gcloud adapter.
+#
+# GEMINI_CLI_HOME is a HOME override (gemini appends `.gemini` itself), not a
+# direct config-dir var. The default profile's base is $HOME, so a personal
+# gemini lands at its native ~/.gemini; a work profile is pinned to a clean,
+# sealable dir via the $VALET_KEY_CONFIG/dirs override (tackup ->
+# ~/.config/gemini-
+# <group>, kernel-sealed by work-guard for the corp Google account).
+
+ADAPTER_ENV=GEMINI_CLI_HOME        # a HOME; gemini appends /.gemini
+ADAPTER_BASE=$HOME                 # default profile -> $HOME -> ~/.gemini
+ADAPTER_SLOTS=0                    # stable refresh token -> no credential pool
+
+# Any of these makes gemini bypass the OAuth login (API key / Vertex / gateway /
+# ADC), so a per-profile OAuth account never takes effect -- scrub them all.
+ADAPTER_UNSET_ENV='GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_USE_VERTEXAI
+GOOGLE_GEMINI_BASE_URL GOOGLE_APPLICATION_CREDENTIALS CLOUD_SHELL
+GEMINI_CLI_USE_COMPUTE_ADC'
+
+# The REAL gemini, skipping the valet-key shim ($VALET_KEY_SELF). npm installs
+# it on
+# PATH (nvm/npm-global); $GEMINI_BIN overrides (odd install / test).
+adapter_realbin() {
+  [ -n "${GEMINI_BIN:-}" ] && { printf '%s\n' "$GEMINI_BIN"; return 0; }
+  for c in "$HOME/.npm-global/bin/gemini" /usr/local/bin/gemini; do
+    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$c"; return 0; }
+  done
+  IFS=:; for d in $PATH; do
+    [ -x "$d/gemini" ] &&
+      [ "$(readlink -f "$d/gemini")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$d/gemini"; return 0; }
+  done
+  return 1
+}
+
+adapter_preexec() { :; }

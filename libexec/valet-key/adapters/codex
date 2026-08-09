@@ -1,0 +1,50 @@
+# valet-key adapter: OpenAI Codex CLI.
+#
+# Sourced by the engine (bin/valet-key). Codex is the SECOND pooled agent (after
+# Claude Code) and the proof the slot pool is agent-generic: it stores its whole
+# identity under one dir, $CODEX_HOME, and its ChatGPT OAuth refresh token is
+# SINGLE-USE and rotates on refresh -- so two live sessions sharing one
+# auth.json knock each other into a re-login, the race a slot pool isolates.
+
+ADAPTER_ENV=CODEX_HOME             # relocates config AND auth.json together
+ADAPTER_BASE=$HOME/.codex          # the default profile's config dir
+ADAPTER_SLOTS=1                    # ChatGPT OAuth refresh token is single-use
+
+# Slot file policy (see libexec/valet-key/slots). Codex specifics.
+ADAPTER_CRED_FILE=auth.json        # the isolation target (OAuth tokens, 0600)
+ADAPTER_STATIC_FILES=config.toml   # shared config (model, MCP servers, ...)
+ADAPTER_SEED_FILES=                # codex has no per-slot seed file
+ADAPTER_PROC_MATCH=codex           # cmdline match for the dead-slot reclaim
+
+# `codex login` is the sign-in flow (opens the browser for ChatGPT OAuth); the
+# bare binary drops into the TUI, so warming a slot must reach `login`.
+ADAPTER_LOGIN_ARGS=login
+# OPENAI_API_KEY silently overrides the stored OAuth login (a known footgun), so
+# scrub it at launch AND before a slot login.
+ADAPTER_UNSET_ENV=OPENAI_API_KEY
+# Codex stores no absolute refresh-token cap (it refreshes on an interval), so
+# leave the cap pattern EMPTY -> the staleness features degrade to "cap unknown"
+# rather than misreport. The pool's lease/reclaim/warm still work fully.
+ADAPTER_EXP_PATTERN=
+
+# The REAL codex, skipping the valet-key shim ($VALET_KEY_SELF, the resolved
+# engine).
+# `npm i -g @openai/codex` lands it on PATH; else FOLLOW PATH in the user's
+# order. $CODEX_BIN overrides (odd install / test).
+adapter_realbin() {
+  [ -n "${CODEX_BIN:-}" ] && { printf '%s\n' "$CODEX_BIN"; return 0; }
+  for c in "$HOME/.npm-global/bin/codex" /usr/local/bin/codex; do
+    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$c"; return 0; }
+  done
+  IFS=:; for d in $PATH; do
+    [ -x "$d/codex" ] &&
+      [ "$(readlink -f "$d/codex")" != "$VALET_KEY_SELF" ] && {
+      printf '%s\n' "$d/codex"; return 0; }
+  done
+  return 1
+}
+
+# Codex errors if CODEX_HOME points at a MISSING dir (it canonicalises it), so
+# the engine mkdir -p's the config dir before exec -- no per-adapter work.
+adapter_preexec() { :; }

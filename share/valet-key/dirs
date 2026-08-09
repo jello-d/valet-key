@@ -1,0 +1,17 @@
+# valet-key per-profile config-dir overrides. Copy to ~/.config/valet-key/dirs
+# and edit.
+#
+# Lines: <agent> <profile> <dir>. When <agent> runs in <profile>, valet-key
+# points
+# it at <dir> instead of the adapter's default (<base> for the default profile,
+# <base>-<profile> otherwise). A leading ~ expands to $HOME. Blank lines and
+# lines starting with # are ignored.
+#
+# Use it for a config dir that must live at a specific path (a sealed location),
+# or for a tool whose env var points at a HOME rather than a config dir -- e.g.
+# gemini's GEMINI_CLI_HOME, where the default <base>-<profile> naming would be
+# an awkward $HOME sibling.
+#
+# Example: pin the work gemini home to a dedicated directory.
+#
+#   gemini  work  ~/.config/gemini-work
