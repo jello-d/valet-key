@@ -166,6 +166,16 @@ valet-key shim <agent>...          make `<agent>` route through valet-key
 valet-key unshim <agent>... | shims | init | shims-dir | rehash
 ```
 
+Two diagnostics, split by what they can fix. **`check`** audits the
+*provisioned* state (pools present, slot counts, structural drift), across the
+whole setup when given no argument; it exits non-zero on drift. **`doctor`**
+sweeps the *live environment* `check` can't touch: whether each agent command
+actually routes through valet-key (the shim wins on `PATH`), whether an API key
+in your shell is shadowing a slot's login, whether a pool is saturated (the next
+launch would overflow to the shared base), and whether any slot is near its cap.
+It's read-only and fails only on a real breakage (a shim that doesn't
+intercept); the rest are advisories.
+
 ## Configuration
 
 - **`VALET_KEY_CONFIG`** is the config dir: the `profiles` rules, the optional
