@@ -20,9 +20,9 @@ account, in **more than one session at once**, you've probably hit this:
 you're working, and out of nowhere the agent drops you back at a login prompt.
 You log in. A while later, it happens again. It looks random.
 
-It isn't. These agents keep your login in a single credentials file, and the
-refresh token inside it is **single-use**: each time the agent refreshes its
-access it rotates that token, and the previous one stops working.
+It isn't. These agents keep your login in a single credentials file, and for
+many of them the refresh token is **single-use**: each time the agent refreshes
+its access it rotates that token, and the previous one stops working.
 
 With one session, that's invisible. But the moment two sessions share the file
 (a terminal and your editor's extension, two git worktrees, a script that
@@ -80,7 +80,7 @@ Install it, put its **shims directory** first on `PATH`, and create one shim
 per agent:
 
 ```sh
-git clone https://github.com/you/valet-key ~/.local/opt/valet-key
+git clone https://github.com/jello-d/valet-key ~/.local/opt/valet-key
 ln -s ~/.local/opt/valet-key/bin/valet-key ~/.local/bin/valet-key   # the CLI
 
 eval "$(valet-key init)"        # prints: export PATH="<shims-dir>:$PATH"
@@ -180,6 +180,10 @@ valet-key unshim <agent>... | shims | init | shims-dir | rehash
   or a test (`CLAUDE_BIN`, `CODEX_BIN`, ...).
 
 Pool size is the `N` argument to `provision` (default `10`), not an env var.
+Size it to your peak concurrent sessions plus a little headroom, and no higher:
+overflow just falls back to the base config, so undersizing is cheap, while
+oversizing backfires two ways. Idle slots still age toward their token cap
+without being refreshed, and a burst of logins can look abusive to the provider.
 
 ---
 
@@ -237,8 +241,10 @@ taught valet-key a new tool. Full field reference in `man valet-key`.
 - **`gemini`**: Google Gemini. Poolless, because its refresh token is
   reusable (not rotated on refresh), so profile separation is all it needs.
 - **`gcloud`**: not a coding agent at all. Proof that valet-key is a general,
-  profile-aware *identity* launcher, and coding agents are simply its flagship
-  case.
+  profile-aware *identity* launcher: `gcloud` uses your work account's config
+  inside the work tree and your personal one elsewhere, with no
+  `gcloud config configurations activate` dance. Coding agents are just the
+  flagship case.
 
 ---
 
