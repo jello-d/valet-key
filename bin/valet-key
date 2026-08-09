@@ -12,7 +12,8 @@
 #   valet-key provision <agent> [profile] [N]    create/refresh a pool (N=5)
 #   valet-key login [warm|check|force|stale] [agent] [profile]    logins
 #   valet-key stale              all pools: warm slots near their cap
-#   valet-key check <agent> [profile]    audit a pool
+#   valet-key check [agent [profile]]    audit a pool, or the whole setup
+#   valet-key doctor             environment health (PATH, creds, saturation)
 #   valet-key slots <verb> ...   raw slot-pool escape hatch
 #
 # Shims (how `claude`/`gemini` come to route here -- a dir of symlinks to this
@@ -65,6 +66,12 @@ load_adapter() {
   _a=$LIBEXEC/adapters/$1
   [ -r "$_a" ] || die "no adapter for agent '$1' ($_a)"
   AGENT=$1
+  # Clear every adapter-supplied var first, so loading a SECOND adapter in one
+  # process (e.g. `doctor`/`check` sweeping all agents) can't inherit the
+  # previous adapter's value for a knob this one legitimately omits.
+  unset ADAPTER_ENV ADAPTER_BASE ADAPTER_SLOTS ADAPTER_CRED_FILE \
+        ADAPTER_STATIC_FILES ADAPTER_SEED_FILES ADAPTER_PROC_MATCH \
+        ADAPTER_UNSET_ENV ADAPTER_LOGIN_ARGS ADAPTER_EXP_PATTERN ADAPTER_QUIET
   . "$_a"
   # The slot-pool vars are only read when ADAPTER_SLOTS=1; a non-agent adapter
   # (e.g. gcloud, slots=0) legitimately omits them, so default to empty here.
@@ -199,9 +206,112 @@ m_login() {
     stale) "$SLOTS" login-stale  "$_id" "$_base" ;;
   esac
 }
+# check: one pool with an agent arg; with NO args, the whole provisioned setup
+# (every pool). The declarative DRIFT audit -- what provisioning owns and can
+# re-fix. Non-zero on any missing pool or structural drift.
 m_check() {
+  [ $# -gt 0 ] || { check_all; return; }
   load_adapter "${1:?agent required}"; _prof=${2:-$DEFAULT_PROFILE}
   "$SLOTS" check "$(pool_id "$_prof")" "$(profile_dir "$_prof")"
+}
+
+# Every installed agent (one adapter file == one agent valet-key knows).
+list_agents() {
+  for _a in "$LIBEXEC"/adapters/*; do
+    [ -r "$_a" ] && printf '%s\n' "${_a##*/}"
+  done
+}
+
+# check_all: audit every provisioned pool. Per pool, load its agent adapter so
+# the slot lib counts warm with the right CRED file, then run the pool check.
+check_all() {
+  _rc=0; _any=0
+  for _p in $("$SLOTS" pools); do
+    _any=1; _ag=${_p%%/*}; _pr=${_p#*/}
+    if [ -r "$LIBEXEC/adapters/$_ag" ]; then
+      load_adapter "$_ag"
+      "$SLOTS" check "$_p" "$(profile_dir "$_pr")" || _rc=1
+    else
+      echo "valet-key: $_p: no adapter for '$_ag'" >&2; _rc=1
+    fi
+  done
+  [ "$_any" = 1 ] || echo "valet-key: no pools provisioned"
+  return "$_rc"
+}
+
+# doctor output helpers -- operate on the m_doctor-scoped counters _warn/_fail
+# (dash has no locals; they are plain globals set by m_doctor).
+_dok()   { printf '  ok    %s\n' "$1"; }
+_dna()   { printf '  --    %s\n' "$1"; }
+_dwarn() { printf '  warn  %s\n' "$1"; _warn=$((_warn + 1)); }
+_dfail() { printf '  FAIL  %s\n' "$1"; _fail=$((_fail + 1)); }
+_dfix()  { printf '        %s\n' "$1"; }
+
+# doctor: the ENVIRONMENTAL sweep -- the runtime health valet-key can neither
+# provision nor repair (PATH order, leaked API keys, pool saturation, slots near
+# their cap). Read-only, launches nothing; complements `check` (declarative
+# drift) as a readiness probe complements a provisioner. Exits non-zero only on
+# a real breakage (a shim that does not intercept); the rest are advisories.
+m_doctor() {
+  _fail=0; _warn=0
+  echo "valet-key doctor"
+
+  echo; echo "shims (does typing the agent route through valet-key?)"
+  for _ag in $(list_agents); do
+    _w=$(command -v "$_ag" 2>/dev/null || true)
+    if [ -z "$_w" ]; then
+      _dna "$_ag: not on PATH (agent not installed)"
+    elif [ "$(readlink -f "$_w" 2>/dev/null)" = "$VALET_KEY_SELF" ]; then
+      _dok "$_ag routes through valet-key"
+    else
+      _dfail "$_ag resolves to $_w, not the shim"
+      _dfix 'put the shims dir first on PATH: eval "$(valet-key init)"'
+    fi
+  done
+
+  echo; echo "environment (creds that would override a slot login)"
+  _leak=0
+  for _ag in $(list_agents); do
+    load_adapter "$_ag"
+    for _k in ${VALET_KEY_UNSET_ENV:-}; do
+      eval "_v=\${$_k:-}"
+      if [ -n "$_v" ]; then
+        _dwarn "$_ag: \$$_k is set (overrides the login on a direct run)"
+        _leak=1
+      fi
+    done
+  done
+  [ "$_leak" = 0 ] && _dok "no agent API key leaking into the environment"
+
+  echo; echo "pools"
+  _any=0
+  for _p in $("$SLOTS" pools); do
+    _any=1; _ag=${_p%%/*}
+    [ -r "$LIBEXEC/adapters/$_ag" ] || { _dwarn "$_p: no adapter"; continue; }
+    load_adapter "$_ag"
+    _c=$("$SLOTS" counts "$_p" 2>/dev/null || echo "0 0 0")
+    _t=${_c%% *}; _r=${_c#* }; _cw=${_r%% *}; _l=${_r##* }
+    if [ "$_t" -gt 0 ] && [ "$_l" -ge "$_t" ]; then
+      _dwarn "$_p saturated: $_l/$_t leased (next launch overflows to base)"
+      _dfix "raise it: valet-key provision $_ag ${_p#*/} <N>"
+    else
+      _dok "$_p: $_cw/$_t warm, $_l leased"
+    fi
+  done
+  [ "$_any" = 1 ] || _dna "no pools provisioned"
+
+  _st=$("$SLOTS" stale 2>/dev/null || true)
+  if [ -n "$_st" ]; then
+    _oifs=$IFS; IFS='
+'
+    for _line in $_st; do _dwarn "near cap: $_line"; done
+    IFS=$_oifs
+    _dfix "re-login: valet-key login stale"
+  fi
+
+  echo
+  echo "valet-key doctor: $_warn warning(s), $_fail problem(s)"
+  [ "$_fail" -eq 0 ]
 }
 
 # --- shims: intercept an agent command by name -------------------------------
@@ -260,6 +370,7 @@ case "$_v" in
   provision)  m_provision "$@" ;;
   login)      m_login "$@" ;;
   check)      m_check "$@" ;;
+  doctor)     m_doctor ;;
   stale)      "$SLOTS" stale ;;
   slots)      "$SLOTS" "$@" ;;
   shim)       m_shim "$@" ;;
@@ -269,6 +380,6 @@ case "$_v" in
   init)       m_init ;;
   shims-dir)  printf '%s\n' "$VALET_KEY_SHIMS_DIR" ;;
   ''|help|-h|--help)
-    sed -n '2,34p' "$VALET_KEY_SELF" | sed 's/^# \{0,1\}//' ;;
+    sed -n '2,35p' "$VALET_KEY_SELF" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command '$_v' (try: valet-key help)" ;;
 esac

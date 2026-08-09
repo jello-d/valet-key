@@ -37,6 +37,8 @@
 #                               "<id>/<slot> <days>d" a line (read-only)
 #   sync      <id> <base>       re-fan the shared links across existing slots
 #   check     <id> <base>       audit the pool; non-zero on structural drift
+#   pools                       list pool ids (<agent>/<profile>), one per line
+#   counts    <id>              "<total> <warm> <leased>" for a pool (machine)
 #
 # POSIX sh (dash). Non-privileged, all under $HOME. Idempotent.
 set -eu
@@ -364,6 +366,35 @@ cmd_check() {
   return 0
 }
 
+# pools: every pool id (<agent>/<profile>) under POOL_ROOT, one per line. Warm
+# counts are per-AGENT (the CRED file differs by agent), so the caller loads the
+# right adapter and asks for one pool at a time via `counts`.
+cmd_pools() {
+  [ -d "$POOL_ROOT" ] || return 0
+  for pd in "$POOL_ROOT"/*/*; do
+    [ -d "$pd" ] || continue
+    printf '%s\n' "${pd#"$POOL_ROOT"/}"
+  done
+}
+
+# counts: "<total> <warm> <leased>" for one pool, machine-readable. Warm uses
+# this call's CRED_FILE, so set the pool's agent adapter first.
+cmd_counts() {
+  id=${1:?pool id required}; pd=$(pool_dir "$id")
+  [ -d "$pd" ] || { echo "0 0 0"; return 1; }
+  _t=0; _w=0; _l=0
+  for slot in "$pd"/slot-*; do
+    [ -d "$slot" ] || continue
+    _t=$((_t + 1))
+    [ -s "$slot/$CRED_FILE" ] && _w=$((_w + 1))
+    if [ -d "$slot/.lease" ]; then
+      hp=$(cat "$slot/.lease/pid" 2>/dev/null || true)
+      pid_live "$hp" && _l=$((_l + 1))
+    fi
+  done
+  echo "$_t $_w $_l"
+}
+
 case "${1:-}" in
   provision)    shift; cmd_provision "$@" ;;
   lease)        shift; cmd_lease "$@" ;;
@@ -374,5 +405,7 @@ case "${1:-}" in
   stale)        shift; cmd_stale "$@" ;;
   sync)         shift; cmd_sync "$@" ;;
   check)        shift; cmd_check "$@" ;;
+  pools)        shift; cmd_pools "$@" ;;
+  counts)       shift; cmd_counts "$@" ;;
   *) echo "valet-key slots: unknown verb '${1:-}'" >&2; exit 2 ;;
 esac

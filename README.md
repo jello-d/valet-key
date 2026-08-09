@@ -160,7 +160,8 @@ valet-key run <agent> [args]       the same, named explicitly
 valet-key provision <agent> [profile] [N]     create/refresh a pool (N=5)
 valet-key login [warm|check|force|stale] [agent] [profile]    slot logins
 valet-key stale                    all pools: warm slots near their token cap
-valet-key check <agent> [profile]  audit a pool (counts + drift)
+valet-key check [agent [profile]]  audit a pool, or the whole setup (drift)
+valet-key doctor                   environment health: PATH, creds, saturation
 valet-key shim <agent>...          make `<agent>` route through valet-key
 valet-key unshim <agent>... | shims | init | shims-dir | rehash
 ```

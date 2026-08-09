@@ -109,9 +109,25 @@ of its hard OAuth cap, one
 per line. Read-only; launches nothing. Its line count is a natural signal for a
 login-reminder banner.
 .TP
-.B valet-key check \fIagent\fR " [" \fIprofile\fR ]
-Audit a pool: report slot / warm / leased counts and exit non-zero on structural
-drift (a missing pool or a dangling shared link).
+.B valet-key check \fR[\fIagent\fR " [" \fIprofile\fR "]]"
+Audit one pool, or with no argument the whole provisioned setup (every pool).
+Reports slot / warm / leased counts and exits non-zero on structural drift (a
+missing pool or a dangling shared link). This is the declarative drift audit;
+see
+.B doctor
+for the environmental one.
+.TP
+.B valet-key doctor
+Environment health sweep, read-only. Checks that each agent command actually
+routes through valet-key (the shim wins on
+.BR PATH ),
+that no agent API key is leaking into the environment (it would override a
+slot's login), that no pool is saturated (every slot leased, so the next launch
+overflows to the shared base), and that no warm slot is near its OAuth cap.
+Exits non-zero only on a real breakage (a shim that does not intercept); the
+rest are advisories. Complements
+.B check
+(declarative drift) as a readiness probe complements a provisioner.
 .TP
 .B valet-key slots \fIverb\fR " [" \fIargs\fR ...]
 Escape hatch to the raw slot-pool library (see
