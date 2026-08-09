@@ -59,6 +59,25 @@ VALET_KEY_SHIMS_DIR=${VALET_KEY_SHIMS_DIR:-$_shimdef}
 
 die() { echo "valet-key: $*" >&2; exit 1; }
 
+# --- marker output (self-painted) --------------------------------------------
+# check + doctor speak the [OK]/[FAIL]/[WARN]/[IGNORE] MARKER contract: an
+# integrator styles the plain markers in its own palette (tackup's `paint`);
+# standalone at a terminal we colour them ourselves, and stay plain when piped
+# or under NO_COLOR. Self-contained -- the markers are a string convention, not
+# a dependency on any integrator's styling code.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  _mke=$(printf '\033')
+  _MG="$_mke[1;32m"; _MR="$_mke[1;31m"; _MY="$_mke[1;33m"
+  _MD="$_mke[2m";    _MO="$_mke[0m"
+else
+  _MG=; _MR=; _MY=; _MD=; _MO=
+fi
+mk_ok()   { printf '  %s[OK]%s   %s\n'   "$_MG" "$_MO" "$1"; }
+mk_bad()  { printf '  %s[FAIL]%s %s\n'   "$_MR" "$_MO" "$1"; }
+mk_warn() { printf '  %s[WARN]%s %s\n'   "$_MY" "$_MO" "$1"; }
+mk_note() { printf '  %s[IGNORE]%s %s\n' "$_MD" "$_MO" "$1"; }
+mk_fix()  { printf '        %s\n' "$1"; }
+
 # --- adapter -----------------------------------------------------------------
 # Load agent <name>'s adapter (sets ADAPTER_*), and export the slot-pool file
 # policy the slots lib reads. Fail loud on an unknown agent.
@@ -212,7 +231,7 @@ m_login() {
 m_check() {
   [ $# -gt 0 ] || { check_all; return; }
   load_adapter "${1:?agent required}"; _prof=${2:-$DEFAULT_PROFILE}
-  "$SLOTS" check "$(pool_id "$_prof")" "$(profile_dir "$_prof")"
+  _check_pool "$(pool_id "$_prof")" "$(profile_dir "$_prof")"
 }
 
 # Every installed agent (one adapter file == one agent valet-key knows).
@@ -222,30 +241,40 @@ list_agents() {
   done
 }
 
-# check_all: audit every provisioned pool. Per pool, load its agent adapter so
-# the slot lib counts warm with the right CRED file, then run the pool check.
+# Audit one pool -> one MARKER line (its agent adapter must be loaded first, so
+# the slot lib counts warm with the right CRED file). Non-zero on drift.
+_check_pool() {   # <id> <base>
+  if _o=$("$SLOTS" check "$1" "$2" 2>&1); then
+    mk_ok "$1 -- ${_o#*-- }"; return 0
+  fi
+  _r=$(printf '%s' "$_o" | grep -iE 'missing|dangling|drift' | head -1)
+  mk_bad "$1 -- ${_r:-drift}"; return 1
+}
+
+# check_all: audit every provisioned pool, one marker line each.
 check_all() {
   _rc=0; _any=0
   for _p in $("$SLOTS" pools); do
     _any=1; _ag=${_p%%/*}; _pr=${_p#*/}
     if [ -r "$LIBEXEC/adapters/$_ag" ]; then
       load_adapter "$_ag"
-      "$SLOTS" check "$_p" "$(profile_dir "$_pr")" || _rc=1
+      _check_pool "$_p" "$(profile_dir "$_pr")" || _rc=1
     else
-      echo "valet-key: $_p: no adapter for '$_ag'" >&2; _rc=1
+      mk_bad "$_p: no adapter for '$_ag'"; _rc=1
     fi
   done
-  [ "$_any" = 1 ] || echo "valet-key: no pools provisioned"
+  [ "$_any" = 1 ] || mk_note "no pools provisioned"
   return "$_rc"
 }
 
-# doctor output helpers -- operate on the m_doctor-scoped counters _warn/_fail
-# (dash has no locals; they are plain globals set by m_doctor).
-_dok()   { printf '  ok    %s\n' "$1"; }
-_dna()   { printf '  --    %s\n' "$1"; }
-_dwarn() { printf '  warn  %s\n' "$1"; _warn=$((_warn + 1)); }
-_dfail() { printf '  FAIL  %s\n' "$1"; _fail=$((_fail + 1)); }
-_dfix()  { printf '        %s\n' "$1"; }
+# doctor output helpers -- the same [OK]/[FAIL]/[WARN]/[IGNORE] markers as
+# check, plus the m_doctor-scoped counters _warn/_fail (dash has no locals; they
+# are plain globals set by m_doctor).
+_dok()   { mk_ok "$1"; }
+_dna()   { mk_note "$1"; }
+_dwarn() { mk_warn "$1"; _warn=$((_warn + 1)); }
+_dfail() { mk_bad "$1"; _fail=$((_fail + 1)); }
+_dfix()  { mk_fix "$1"; }
 
 # doctor: the ENVIRONMENTAL sweep -- the runtime health valet-key can neither
 # provision nor repair (PATH order, leaked API keys, pool saturation, slots near
