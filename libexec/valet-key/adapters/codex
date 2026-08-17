@@ -12,7 +12,9 @@ ADAPTER_SLOTS=1                    # ChatGPT OAuth refresh token is single-use
 
 # Slot file policy (see libexec/valet-key/slots). Codex specifics.
 ADAPTER_CRED_FILE=auth.json        # the isolation target (OAuth tokens, 0600)
-ADAPTER_STATIC_FILES=config.toml   # shared config (model, MCP servers, ...)
+# shared, non-secret files fanned to every slot: config.toml (model/MCP) and
+# AGENTS.md (the work-account memory a host seeds into the base, read globally).
+ADAPTER_STATIC_FILES='config.toml AGENTS.md'
 ADAPTER_SEED_FILES=                # codex has no per-slot seed file
 ADAPTER_PROC_MATCH=codex           # cmdline match for the dead-slot reclaim
 
