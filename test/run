@@ -1,0 +1,12 @@
+#!/bin/sh
+# test/run - run every valet-key shell test (test/*.t) and report. Non-zero if
+# any test fails. POSIX sh, no dependency beyond a shell and the repo checkout.
+set -eu
+_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+_rc=0
+for _t in "$_dir"/*.t; do
+  [ -f "$_t" ] || continue
+  sh "$_t" || _rc=1
+done
+[ "$_rc" -eq 0 ] && echo "all valet-key tests passed"
+exit "$_rc"
