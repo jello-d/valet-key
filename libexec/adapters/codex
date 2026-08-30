@@ -10,7 +10,7 @@ ADAPTER_ENV=CODEX_HOME             # relocates config AND auth.json together
 ADAPTER_BASE=$HOME/.codex          # the default profile's config dir
 ADAPTER_SLOTS=1                    # ChatGPT OAuth refresh token is single-use
 
-# Slot file policy (see libexec/valet-key/slots). Codex specifics.
+# Slot file policy (see libexec/slots). Codex specifics.
 ADAPTER_CRED_FILE=auth.json        # the isolation target (OAuth tokens, 0600)
 # shared, non-secret files fanned to every slot: config.toml (model/MCP) and
 # AGENTS.md (the work-account memory a host seeds into the base, read globally).

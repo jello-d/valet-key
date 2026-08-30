@@ -80,8 +80,8 @@ Install it, put its **shims directory** first on `PATH`, and create one shim
 per agent:
 
 ```sh
-git clone https://github.com/jello-d/valet-key ~/.local/opt/valet-key
-ln -s ~/.local/opt/valet-key/bin/valet-key ~/.local/bin/valet-key   # the CLI
+git clone https://github.com/jello-d/valet-key ~/.valet-key
+~/.valet-key/setup.sh install   # links valet-key into ~/.local (bin/libexec/..)
 
 eval "$(valet-key init)"        # prints: export PATH="<shims-dir>:$PATH"
 valet-key shim claude           # make `claude` route through valet-key
@@ -237,7 +237,7 @@ volume, the time of day.
 
 ### Adapters: add an agent
 
-An adapter is a small shell fragment, `libexec/valet-key/adapters/<agent>`,
+An adapter is a small shell fragment, `libexec/adapters/<agent>`,
 that declares how one agent stores its identity: the env var that points it at
 its config dir, its base dir, whether it needs the slot pool (a single-use
 token to isolate) or just profile separation, and which files a slot keeps

@@ -9,7 +9,7 @@ ADAPTER_ENV=CLAUDE_CONFIG_DIR      # env var pointing the agent at a config
 ADAPTER_BASE=$HOME/.claude         # the default profile's config dir
 ADAPTER_SLOTS=1                    # Claude's OAuth refresh token rotates
 
-# Slot file policy (see libexec/valet-key/slots). Claude Code specifics.
+# Slot file policy (see libexec/slots). Claude Code specifics.
 ADAPTER_CRED_FILE=.credentials.json
 ADAPTER_STATIC_FILES='settings.json settings.local.json CLAUDE.md'
 ADAPTER_SEED_FILES=.claude.json

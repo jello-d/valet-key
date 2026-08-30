@@ -221,7 +221,7 @@ profile and
 Enforcement of a real boundary lives in the integrator, never in valet-key.
 .SH ADAPTERS
 An adapter is a shell fragment under
-.I libexec/valet-key/adapters/<agent>
+.I libexec/adapters/<agent>
 sourced by the engine. It declares the config-dir environment variable
 .RB ( ADAPTER_ENV ),
 the base config directory
@@ -302,10 +302,10 @@ and
 .I share
 as siblings under one prefix.
 .TP
-.I libexec/valet-key/slots
+.I libexec/slots
 The credential-slot pool library.
 .TP
-.I libexec/valet-key/adapters/<agent>
+.I libexec/adapters/<agent>
 Per-agent adapters.
 .TP
 .I $VALET_KEY_CONFIG/context

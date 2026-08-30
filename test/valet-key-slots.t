@@ -1,6 +1,6 @@
 #!/bin/sh
-# test/valet-key-slots.t - the credential-slot pool lib (libexec/valet-key/
-# slots): provisioning + seeding, the runtime-lock healing, leasing / dead-
+# test/valet-key-slots.t - the credential-slot pool lib (libexec/slots):
+# provisioning + seeding, the runtime-lock healing, leasing / dead-
 # holder reclaim / overflow, drift, the login warm/check/force flow, and the
 # stale scan. Pure string/FS logic in a scratch dir; nothing on the box is
 # touched.
@@ -8,7 +8,7 @@ set -eu
 . "$(dirname "$0")/lib.sh"
 harness_init valet-key-slots
 
-SLOTS=$HERE/libexec/valet-key/slots
+SLOTS=$HERE/libexec/slots
 ID=claude/personal                       # pool id = <agent>/<profile>
 export VALET_KEY_PROC_MATCH=claude           # the adapter's cmdline guard
 

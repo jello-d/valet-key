@@ -46,7 +46,7 @@ case $_self in
 esac
 VALET_KEY_SELF=$(readlink -f -- "$_self" 2>/dev/null || echo "$_self")
 export VALET_KEY_SELF          # adapters skip this path finding the real binary
-LIBEXEC=${VALET_KEY_SELF%/*}/../libexec/valet-key
+LIBEXEC=${VALET_KEY_SELF%/*}/../libexec
 SLOTS="$LIBEXEC/slots"
 VALET_KEY_CONFIG=${VALET_KEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}\
 /valet-key}
