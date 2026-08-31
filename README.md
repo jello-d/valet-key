@@ -269,3 +269,10 @@ Complete command, hook, adapter, and environment reference: **`man valet-key`**
 valet-key is stable and in daily use. It is being published as a standalone
 project extracted from a personal environment repository; a `LICENSE` will
 accompany the release.
+
+## Development
+
+An 80-column limit is enforced by a tracked pre-commit hook. Enable it once
+per clone:
+
+    git config core.hooksPath .githooks
