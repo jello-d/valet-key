@@ -128,18 +128,59 @@ profile_dir() {
 
 pool_id() { printf '%s/%s\n' "$AGENT" "$1"; }   # <agent>/<profile>
 
+# A profile name becomes a PATH COMPONENT (profile_dir's <base>-<profile>) and
+# half a pool id, so it is validated as a DNS label before use: lowercase
+# alphanumeric and hyphen, not leading or trailing, 63 max. A hook returning
+# `../..` would otherwise choose where valet-key writes. Invalid is an ERROR,
+# never a silent fall back to the default -- a mangled profile quietly becoming
+# `personal` would route a WORK agent to the personal account, which is the one
+# direction this must never fail in.
+valid_profile() {   # <name>
+  case $1 in
+    ''|*[!a-z0-9-]*|-*|*-) return 1 ;;
+  esac
+  [ "${#1}" -le 63 ]
+}
+
 # --- the resolve seam: which profile for the current context? ----------------
 # Hook wins; else the built-in cwd matcher over $VALET_KEY_CONFIG/profiles;
-# else the
-# default profile. The context is the git root if any, else $PWD.
+# else the default profile. The context is the git root if any, else $PWD.
+#
+# When a hook is installed it is the AUTHORITY, and its EXIT STATUS says
+# whether it answered:
+#
+#   exit 0 + a token  -> that profile.
+#   exit 0 + empty    -> it answered "no special context here": use the
+#                        default. A real answer, not an abstention.
+#   non-zero          -> it could not tell. ONLY this falls through to the
+#                        matcher below.
+#
+# Empty used to mean "no opinion" and fall through, which left a provider no
+# way to say "I know, and it is the baseline": it had to invent a positive
+# token for the default, so every integrator's shim carried the same
+# `${answer:-personal}` mapping to manufacture one. Worse, a hook that FAILED
+# was indistinguishable from one deliberately saying "baseline", so a broken
+# integration silently re-enabled cwd guessing instead of surfacing. The exit
+# status now carries that distinction, and the mapping leaves every shim.
 here_dir() {
   _r=$(git rev-parse --show-toplevel 2>/dev/null || true)
   ( cd "${_r:-$PWD}" 2>/dev/null && pwd -P ) || printf '%s\n' "$PWD"
 }
 resolve_profile() {
   if [ -x "$VALET_KEY_CONFIG/context" ]; then
-    _p=$("$VALET_KEY_CONFIG/context" resolve 2>/dev/null || true)
-    [ -n "$_p" ] && { printf '%s\n' "$_p"; return 0; }
+    if _p=$("$VALET_KEY_CONFIG/context" resolve 2>/dev/null); then
+      # First line, with surrounding whitespace trimmed. Deliberately NOT a
+      # blanket space-strip: that would silently weld "has space" into a
+      # legal-looking "hasspace" rather than rejecting it below.
+      _p=$(printf '%s' "$_p" | head -1)
+      _p=${_p#"${_p%%[![:space:]]*}"}
+      _p=${_p%"${_p##*[![:space:]]}"}
+      [ -n "$_p" ] || _p=$DEFAULT_PROFILE
+      valid_profile "$_p" || {
+        echo "valet-key: context hook returned an invalid profile: '$_p'" >&2
+        exit 1; }
+      printf '%s\n' "$_p"; return 0
+    fi
   fi
   if [ -r "$VALET_KEY_CONFIG/profiles" ]; then
     _h=$(here_dir)

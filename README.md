@@ -217,6 +217,25 @@ logic than a directory match, make `$VALET_KEY_CONFIG/context` executable and
 have its `resolve` verb print the active profile name. It overrides the
 built-in rule.
 
+The hook's **exit status** says whether it answered:
+
+| exit | output | meaning |
+| --- | --- | --- |
+| `0` | a name | that profile |
+| `0` | empty | "no special context here" -- use the default profile |
+| non-zero | (ignored) | "I cannot tell" -- fall back to the built-in rule |
+
+Exit 0 is authoritative, *including* when the output is empty: that is a real
+answer, not an abstention, so the directory matcher is skipped. Only a
+non-zero exit falls through to it. This means a provider that knows the
+context is the baseline can simply say nothing, instead of inventing a token
+for the default; and a hook that is broken cannot be mistaken for one that
+deliberately said "baseline".
+
+The name is validated as a DNS label (`a-z`, `0-9`, hyphen; no leading or
+trailing hyphen; 63 max), because it becomes a directory component and a pool
+id. An invalid name is a hard error, never a silent fall back to the default.
+
 ### A pre-launch check (guard)
 
 valet-key can run one optional check *before* it launches, and let it **warn**
