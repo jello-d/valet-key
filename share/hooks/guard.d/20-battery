@@ -1,0 +1,19 @@
+#!/bin/sh
+# EXAMPLE veto that WARNS rather than refusing: on battery, say so.
+#
+# The case for this: a long agent run is expensive in wall-clock and in power,
+# and finding out you were unplugged when the machine sleeps mid-run is worse
+# than being told at the start. But it is your call, not the tool's -- so this
+# warns and proceeds. Exit 2 exists precisely for "you probably want to know",
+# as distinct from "no".
+#
+# A warning cannot mask a refusal: if any other guard exits 1, the launch is
+# refused regardless of what this one said. The strictest verdict wins.
+set -eu
+
+_bat=/sys/class/power_supply/AC/online
+[ -r "$_bat" ] || exit 0                       # no battery, or cannot tell
+[ "$(cat "$_bat" 2>/dev/null)" = 0 ] || exit 0 # on mains
+
+echo "battery: running '$1' on battery power." >&2
+exit 2

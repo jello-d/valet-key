@@ -1,0 +1,27 @@
+#!/bin/sh
+# EXAMPLE selector: pick a profile from the active kubernetes context.
+#
+# The case for this: which cluster you are pointed at is a better description
+# of "what am I working on" than any directory, and it changes under you
+# without you moving. An agent given the wrong cloud credentials for the
+# cluster in front of it is a bad afternoon.
+#
+# This one also demonstrates the answer people forget: EXIT 0 PRINTING
+# NOTHING. That means "I looked, and the answer is definitely the default" --
+# a real answer, so the chain stops and the cwd table is NOT consulted. Use it
+# when you know there is no special context, as opposed to exiting non-zero,
+# which means you could not tell.
+set -eu
+
+command -v kubectl >/dev/null 2>&1 || exit 1        # cannot tell
+_ctx=$(kubectl config current-context 2>/dev/null) || exit 1
+
+case $_ctx in
+  prod-*)     echo prod ;;
+  staging-*)  echo staging ;;
+  minikube|kind-*)
+    # Deliberately the DEFAULT profile, stated positively: a local cluster is
+    # not a special context, and we do not want a later rule to guess one.
+    exit 0 ;;
+  *)          exit 1 ;;                              # unknown: abstain
+esac

@@ -1,6 +1,8 @@
-# valet-key profiles -- the built-in cwd resolver (a $VALET_KEY_CONFIG/context
-# `resolve`
-# hook overrides this entirely). Copy to ~/.config/valet-key/profiles and edit.
+# valet-key profiles -- the built-in cwd resolver. Copy to
+# ~/.config/valet-key/profiles and edit.
+#
+# Consulted only when every hooks/profile.d/ hook abstains (or there are none),
+# so this is the answer for a box that needs no hooks at all.
 #
 # Lines: <profile> <dir>. When the context (git root, else $PWD) sits under
 # <dir>, that profile is chosen; first match wins. An unmatched context falls

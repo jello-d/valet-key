@@ -211,60 +211,94 @@ whose env points at a *home* rather than a config dir), add a
 
 ### A resolver hook
 
-valet-key must decide two things it cannot always know: **which profile**
-applies here, and **whether it may launch at all**. Its own answers are a
-directory table and "always proceed". Both are extension points, and they are
-separate because they are different questions -- a veto is not a profile name,
-and a selection cannot say "stop".
+### Hooks: the two questions valet-key cannot answer
 
-A hook's **directory** says which question it answers. There is no verb to
-dispatch, and nothing forces you to answer a question you do not care about:
+**You may not need any.** With no hooks valet-key runs a single `personal`
+profile, consults the `profiles` cwd table if you wrote one, and never refuses
+anything. That is a complete, working setup. Hooks exist for the two decisions
+where a directory table is the wrong instrument.
+
+**1. Which profile applies here?** The built-in answer infers it from *where
+you are*. That works until the thing that decides isn't a location: which
+cluster you are pointed at, which client's remote this repo has, which unix
+group the process holds. Those change without you moving, and a directory
+cannot express them.
+
+**2. May this launch at all?** The built-in answer is "always". Sometimes a
+launch is *coherent* only under conditions valet-key has no view of — a
+reachable network, a mounted volume, an identity you hold. Launching anyway
+doesn't fail cleanly; an agent that can't reach something improvises around it.
+
+These are **different questions**, and that is why there are two seams rather
+than one hook answering both. A veto is not a profile name, and a selection
+cannot say "stop". Keeping them separate means a veto-only integration writes
+one file and says nothing about profiles.
+
+A hook's **directory is the verb** — no argument to dispatch on, no case
+statement, nothing to implement for a question you don't care about:
 
 ```
 ~/.config/valet-key/hooks/
-  profile.d/10-mytool     # prints a profile name
-  guard.d/10-mytool       # 0 ok / 2 warn / 1 refuse
-  guard.d/50-vpn          # a second, independent veto
+  profile.d/10-git-remote      # route by the repo's remote
+  profile.d/20-kube-context    # route by the active cluster
+  guard.d/10-vpn               # refuse work profiles with the VPN down
+  guard.d/20-battery           # warn when unplugged
 ```
 
-**Selection** (`profile.d`): each hook runs in name order until one **answers**.
+Annotated versions of all four ship in `share/hooks/` — copy, chmod +x, edit.
+Nothing there is installed.
+
+#### Selection: first to *answer* wins
+
+Hooks run in name order until one answers. The **exit status** says whether it
+did:
 
 | exit | output | meaning |
 | --- | --- | --- |
 | `0` | a name | that profile; the chain stops |
-| `0` | empty | "definitely the default here" -- also an answer, chain stops |
-| non-zero | (ignored) | "I cannot tell" -- try the next hook |
+| `0` | empty | "definitely the default here" — also an answer, chain stops |
+| non-zero | (ignored) | "I cannot tell" — try the next hook |
 
-Only a non-zero exit passes along, and after every hook abstains the directory
-table runs. That distinction is the point: a provider that *knows* the answer
-is the baseline can say so instead of inventing a token for it, and a broken
-hook cannot be mistaken for one that deliberately said "baseline".
+Only non-zero passes along; when every hook abstains, the `profiles` table
+runs. That third row is the one people miss, and it is the reason the status
+carries the meaning rather than the output: a hook that *knows* the answer is
+the baseline can say so, instead of inventing a token for the default. And a
+**broken** hook cannot be mistaken for one that deliberately said "baseline" —
+it exits non-zero, which means "cannot tell", so selection moves on instead of
+silently adopting a wrong answer.
 
-**Veto** (`guard.d`): **every** hook runs and **any refusal refuses**. Adding a
-guard may only ever make things stricter, or a second guard could silently
-cancel the first. A hook that cannot run counts as a refusal -- a safety check
-that failed has not cleared anything.
+Order is precedence, like `PATH`. Two hooks may legitimately disagree; you
+decide which is authoritative by naming them.
 
-The profile name is validated as a DNS label (`a-z`, `0-9`, hyphen; no leading
-or trailing hyphen; 63 max), because it becomes a directory component and a
-pool id. An invalid name is a hard error, never a silent fall back.
+#### Veto: any refusal wins
 
-### A pre-launch check (guard)
+**Every** guard runs, and the strictest verdict decides: any `1` refuses, else
+any `2` warns, else proceed. A guard that cannot run counts as a refusal — a
+safety check that failed has not cleared anything, and failing open is the one
+direction this must not fail.
 
-valet-key runs every executable in `$VALET_KEY_CONFIG/hooks/guard.d/` before
-it launches, with the chosen profile as `$1`: exit `0` to proceed, `2` to warn
-and continue, `1` to refuse and abort. The hook owns the message.
+That composition is what makes guards additive. A VPN check and an
+account-boundary check are two files that never mention each other, and adding
+a third can only make things stricter — no hook can cancel another's refusal.
+Each owns its own message; its stderr passes through to you.
 
-**Any refusal refuses**, and a hook that cannot run counts as one. That is what
-lets unrelated checks compose: a hard account boundary refusing the personal
-account inside a work tree, and a VPN check, are two files that never mention
-each other. Adding one can only make things stricter.
+The chosen profile arrives as `$1` and in `$VALET_KEY_PROFILE`; the agent is in
+`$VALET_KEY_AGENT`. Guarding only some profiles is up to the hook.
 
-> **This is a reminder, not a wall.** The guard reflects and refuses; it does
-> not enforce. If you need a real boundary (say, a zero-data-retention tree one
-> account must never read), enforce it in the OS (ownership, an ACL, a
-> namespace) in the integration that supplies the hook. valet-key can say *no*;
-> it cannot *be* the lock.
+#### Where hooks come from
+
+valet-key ships none, and nothing installs any. A hook names tools *your* box
+runs, so it belongs to whoever configures the box — you, or your provisioning
+layer. `valet-key doctor` checks whatever it finds: that selectors answer
+quietly and return a usable name, and that guards exit inside the documented
+range.
+
+> **A guard is a reminder, not a wall.** It reflects and refuses; it does not
+> enforce. If you need a real boundary — say, a zero-data-retention tree one
+> account must never read — enforce it in the OS (ownership, an ACL, a
+> namespace) in whatever supplies the hook. valet-key can say *no*; it cannot
+> *be* the lock, and a guard that is the only thing standing between an account
+> and a file is a guard you will eventually route around.
 
 ### Adapters: add an agent
 

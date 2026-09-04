@@ -1,0 +1,26 @@
+#!/bin/sh
+# EXAMPLE selector: pick a profile from the repo's git remote.
+#
+# The case for this: consultants and contractors keep each client's work in
+# separate repos, and want each client's agent credentials kept separate too.
+# The built-in cwd table can do that only if every client's repos live under
+# one directory. The remote is the real fact; where you cloned it is not.
+#
+# THE CONTRACT this file demonstrates:
+#   exit 0 + a name  -> use that profile, and stop. No later hook runs.
+#   exit 1 (or any non-zero) -> "I cannot tell". The NEXT hook runs, and if
+#                        they all abstain, the cwd table in `profiles` does.
+#
+# Note what is NOT here: no verb argument, and nothing about vetoes. A selector
+# answers one question. If you also want to refuse launches, that is a separate
+# file in guard.d, and the two never need to know about each other.
+set -eu
+
+_url=$(git config --get remote.origin.url 2>/dev/null) || exit 1
+[ -n "$_url" ] || exit 1          # not in a repo: abstain, let the next decide
+
+case $_url in
+  *github.com*acme*)     echo acme ;;
+  *gitlab.example.com*)  echo bigco ;;
+  *)                     exit 1 ;;   # a repo, but not one we route: abstain
+esac

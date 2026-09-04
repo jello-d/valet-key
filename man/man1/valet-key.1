@@ -241,13 +241,27 @@ things stricter, or a second guard could silently cancel the first. That is
 what lets two unrelated vetoes \(em a boundary and a VPN check \(em compose
 without either knowing the other exists.
 .PP
+valet-key ships NO hooks and needs none: with none installed it runs a single
+.I personal
+profile, consults
+.I profiles
+if you wrote one, and refuses nothing. Annotated examples \(em routing by git
+remote or kube context, refusing on a downed VPN, warning on battery \(em are
+in
+.IR <share>/hooks/ ,
+to copy and edit. Nothing there is installed, and none of it is about any
+particular integration.
+.PP
 The adapter says
 .I how
 a profile maps to config; the seams say
 .I which
 profile and
 .I whether it is allowed.
-Enforcement of a real boundary lives in the integrator, never in valet-key.
+A guard is a reminder, not a wall: it reflects and refuses but does not
+enforce. A real boundary belongs in the OS \(em ownership, an ACL, a namespace
+\(em in whatever supplies the hook. valet-key can say no; it cannot BE the
+lock.
 .SH ADAPTERS
 An adapter is a shell fragment under
 .I libexec/adapters/<agent>

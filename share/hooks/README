@@ -1,0 +1,16 @@
+# valet-key hooks -- examples. NOTHING HERE IS INSTALLED.
+#
+# valet-key ships no hooks and needs none: with an empty (or absent) hooks
+# directory it runs a single `personal` profile, consults the cwd table in
+# `profiles` if you wrote one, and never refuses anything. Hooks exist for the
+# cases where that is not enough.
+#
+# Copy an example to $VALET_KEY_CONFIG/hooks/<dir>/<NN-name>, make it
+# executable, and edit. The NN prefix orders them; see the two directories'
+# own notes for what order MEANS in each (it decides selection, and does not
+# matter for vetoes).
+#
+# These examples are deliberately about ordinary things -- a VPN, a battery, a
+# git remote, a kube context -- because the seam is not about any one
+# integration. Anything that can answer a question with an exit status can be
+# a hook.

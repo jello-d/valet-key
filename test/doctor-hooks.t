@@ -26,6 +26,20 @@ doc() {
 }
 mkhook() { printf '%s\n' "$2" > "$1"; chmod +x "$1"; }
 
+# Drives the real resolve seam, to check an example in the LAUNCH path rather
+# than only through doctor's inspection of it.
+_fns=$(sed -n '/^valid_profile() {/,/^}/p;/^_hooks_in() {/,/^}/p;
+               /^here_dir() {/,/^}/p;/^resolve_profile() {/,/^}/p' "$VK")
+drive_resolve() {
+  ( cd "$T" && env VALET_KEY_CONFIG="$T/cfg" sh -c "
+      set -eu
+      DEFAULT_PROFILE=personal
+      VALET_KEY_CONFIG=\$VALET_KEY_CONFIG
+      VALET_KEY_HOOKS=\$VALET_KEY_CONFIG/hooks
+      $_fns
+      resolve_profile" ) 2>/dev/null
+}
+
 # --- no hooks: not a problem, the built-in rule decides --------------------
 case $(doc) in
   *"[IGNORE]"*) ;;
@@ -94,5 +108,34 @@ rm -f "$T/cfg/context"
 case $(doc) in
   *severance*|*tackup*|*mux*) fail "doctor's hook check names a provider" ;;
 esac
+
+# --- the SHIPPED examples must satisfy the contract they document ----------
+# An example that no longer works is worse than none: it teaches the wrong
+# shape, and nobody runs it to find out. These are the files share/hooks/
+# tells people to copy.
+for _ex in "$HERE"/share/hooks/profile.d/* "$HERE"/share/hooks/guard.d/*; do
+  [ -f "$_ex" ] || continue
+  [ -x "$_ex" ] || fail "shipped example is not executable: $_ex"
+  dash -n "$_ex" || fail "shipped example is not valid sh: $_ex"
+done
+
+rm -f "$PD"/* "$GD"/*
+cp "$HERE"/share/hooks/profile.d/* "$PD/"
+cp "$HERE"/share/hooks/guard.d/* "$GD/"
+chmod +x "$PD"/* "$GD"/*
+out=$(doc)
+case $out in
+  *"[FAIL]"*) fail "a shipped example fails doctor's own checks: $out" ;;
+esac
+
+# They must also RUN cleanly in the launch path, not merely pass inspection:
+# a selector that abstains and a guard that allows leave the default in place.
+[ "$(drive_resolve)" = personal ] ||
+  fail "shipped examples changed the resolved profile on this box"
+
+# ...and none of them names severance. The seam is not about one integration,
+# and an example that assumed one would teach exactly the wrong lesson.
+grep -rli severance "$HERE/share/hooks" >/dev/null 2>&1 &&
+  fail "a shipped example names a specific integration"
 
 pass

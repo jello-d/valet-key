@@ -1,0 +1,37 @@
+#!/bin/sh
+# EXAMPLE veto: refuse to launch a work profile with the VPN down.
+#
+# The case for this: an agent that cannot reach the internal package registry
+# does not stop -- it improvises. It reaches for a public mirror, or writes
+# code around the dependency it could not fetch, and you find out in review.
+# Refusing up front is cheaper than reading the diff.
+#
+# THE CONTRACT this file demonstrates:
+#   exit 0  -> proceed
+#   exit 2  -> warn and proceed. Say why on stderr; the message is yours.
+#   exit 1  -> refuse and abort. Say why on stderr.
+# Anything else counts as a REFUSAL, because a check that could not run has
+# not cleared anything.
+#
+# EVERY guard runs and ANY refusal wins, so this file does not need to know
+# what other guards exist, and cannot be cancelled by one that says yes. That
+# is the property that lets unrelated checks coexist: adding a guard can only
+# ever make things stricter.
+#
+# The chosen profile is "$1" (and $VALET_KEY_PROFILE); the agent is
+# $VALET_KEY_AGENT. Guarding only some profiles is up to you.
+set -eu
+
+case ${1:-} in
+  personal|'') exit 0 ;;             # nothing to protect on the personal side
+esac
+
+# Substitute your own liveness test: a route, a resolvable internal name, a
+# reachable host. Cheap and non-interactive -- this runs on every launch.
+if ip route show 2>/dev/null | grep -q '^10\.0\.0\.0/8'; then
+  exit 0
+fi
+
+echo "vpn: refusing '$1' -- the corporate VPN is down." >&2
+echo "  an agent that cannot reach the internal registry will improvise." >&2
+exit 1
