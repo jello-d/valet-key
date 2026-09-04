@@ -190,42 +190,56 @@ overriding the
 .RI < base >- P
 default \(em for a config dir that must live at a specific path, or a tool
 whose environment variable points at a home rather than a config directory.
-.SH THE CONTEXT SEAM
-Two optional hooks let an integrator supply richer logic than the built-in
-directory rules. Without them, valet-key runs a single
-.I personal
-profile and always proceeds.
+.SH THE HOOK SEAMS
+valet-key must decide two things it cannot always know: WHICH PROFILE applies
+here, and WHETHER IT MAY LAUNCH at all. Its own answers are the directory table
+in
+.I profiles
+and "always proceed". Both are extension points, and they are separate because
+they are different questions: a veto is not a profile name, and a selection
+cannot say "stop".
+.PP
+A hook's DIRECTORY says which question it answers, so there is no verb to
+dispatch and nothing forces you to answer a question you do not care about. All
+hooks run in name order with
+.B VALET_KEY_AGENT
+in the environment.
 .TP
-.B $VALET_KEY_CONFIG/context resolve
-Print the active profile name. When present the hook is the AUTHORITY, and its
-EXIT STATUS says whether it answered: exit
+.I $VALET_KEY_CONFIG/hooks/profile.d/*
+SELECTION. Each runs until one ANSWERS. Exit
 .B 0
-with a name selects that profile; exit
+printing a name selects that profile; exit
 .B 0
-with EMPTY output is also an answer \(em "no special context here" \(em and
-selects the default profile; a NON-ZERO exit means "I cannot tell" and is the
-only case that falls back to the built-in resolver (see
-.BR FILES ,
-.IR profiles ).
+printing NOTHING is also an answer \(em "definitely the default here" \(em and
+stops the chain; a NON-ZERO exit means "I cannot tell" and passes to the next
+hook. Only that last case falls through, and after every hook abstains the
+directory table runs.
 .IP
-Exit 0 is authoritative even when it prints nothing, so a provider that knows
-the context is the baseline can simply say so instead of inventing a token for
-the default, and a BROKEN hook cannot be mistaken for one that deliberately
-said "baseline". The name is validated as a DNS label (lowercase alphanumeric
-and hyphen, not leading or trailing, 63 max) because it becomes a directory
-component and half a pool id; an invalid name is a hard error, never a silent
-fall back to the default.
+That distinction is the point. A provider that knows the answer is the baseline
+can say so instead of inventing a token for the default, and a BROKEN hook
+cannot be mistaken for one that deliberately said "baseline". The name is
+validated as a DNS label; an invalid one is a hard error, never a silent fall
+back.
 .TP
-.B $VALET_KEY_CONFIG/context guard \fIprofile\fR
-Decide coherence for the resolved profile: exit
+.I $VALET_KEY_CONFIG/hooks/guard.d/*
+VETO, with the chosen profile as
+.RI $ 1
+and in
+.BR VALET_KEY_PROFILE .
+EVERY hook runs and ANY refusal refuses: exit
 .B 0
 to proceed,
 .B 2
 to warn and continue,
 .B 1
-to refuse and abort. The hook owns the message (its standard error passes
-through). This is where a hard boundary \(em a zero-data-retention work tree,
-say \(em says no.
+to refuse and abort. Anything else is the hook failing, and counts as a
+REFUSAL \(em a safety check that could not run has not cleared anything. The
+hook owns the message (its standard error passes through).
+.IP
+Any-refusal-wins is not a style choice: adding a guard must only ever make
+things stricter, or a second guard could silently cancel the first. That is
+what lets two unrelated vetoes \(em a boundary and a VPN check \(em compose
+without either knowing the other exists.
 .PP
 The adapter says
 .I how
@@ -323,11 +337,12 @@ The credential-slot pool library.
 .I libexec/adapters/<agent>
 Per-agent adapters.
 .TP
-.I $VALET_KEY_CONFIG/context
-The optional integrator hook
-.RB ( resolve ", " guard ).
-Its exit status distinguishes "I answered" from "I cannot tell"; see
-.BR "THE CONTEXT SEAM" .
+.I $VALET_KEY_CONFIG/hooks/profile.d/
+.TQ
+.I $VALET_KEY_CONFIG/hooks/guard.d/
+The optional integrator hooks: the directory says which question a hook
+answers. See
+.BR "THE HOOK SEAMS" .
 .TP
 .I $VALET_KEY_CONFIG/profiles
 The built-in directory resolver: lines
@@ -337,9 +352,9 @@ when the context (git root, else
 .BR $PWD )
 sits under
 .IR dir ,
-that profile is chosen (first match wins). A hook that ANSWERS overrides this
-entirely; it is consulted only when there is no hook, or the hook exits
-non-zero.
+that profile is chosen (first match wins). Consulted only when every
+.I profile.d
+hook abstains.
 .TP
 .I $VALET_KEY_CONFIG/dirs
 Per-profile config-dir overrides: lines

@@ -179,7 +179,7 @@ intercept); the rest are advisories.
 ## Configuration
 
 - **`VALET_KEY_CONFIG`** is the config dir: the `profiles` rules, the optional
-  `dirs` overrides, and the optional `context` hook. Default
+  `dirs` overrides, and the optional `hooks/` dirs. Default
   `~/.config/valet-key`.
 - **`VALET_KEY_SHIMS_DIR`** is where shims live; put it first on `PATH`.
   Default `~/.local/share/valet-key/shims`.
@@ -211,42 +211,54 @@ whose env points at a *home* rather than a config dir), add a
 
 ### A resolver hook
 
-The built-in resolver matches `$PWD` (or the git root) against the
-`<profile> <dir>` lines in `$VALET_KEY_CONFIG/profiles`. If you need richer
-logic than a directory match, make `$VALET_KEY_CONFIG/context` executable and
-have its `resolve` verb print the active profile name. It overrides the
-built-in rule.
+valet-key must decide two things it cannot always know: **which profile**
+applies here, and **whether it may launch at all**. Its own answers are a
+directory table and "always proceed". Both are extension points, and they are
+separate because they are different questions -- a veto is not a profile name,
+and a selection cannot say "stop".
 
-The hook's **exit status** says whether it answered:
+A hook's **directory** says which question it answers. There is no verb to
+dispatch, and nothing forces you to answer a question you do not care about:
+
+```
+~/.config/valet-key/hooks/
+  profile.d/10-mytool     # prints a profile name
+  guard.d/10-mytool       # 0 ok / 2 warn / 1 refuse
+  guard.d/50-vpn          # a second, independent veto
+```
+
+**Selection** (`profile.d`): each hook runs in name order until one **answers**.
 
 | exit | output | meaning |
 | --- | --- | --- |
-| `0` | a name | that profile |
-| `0` | empty | "no special context here" -- use the default profile |
-| non-zero | (ignored) | "I cannot tell" -- fall back to the built-in rule |
+| `0` | a name | that profile; the chain stops |
+| `0` | empty | "definitely the default here" -- also an answer, chain stops |
+| non-zero | (ignored) | "I cannot tell" -- try the next hook |
 
-Exit 0 is authoritative, *including* when the output is empty: that is a real
-answer, not an abstention, so the directory matcher is skipped. Only a
-non-zero exit falls through to it. This means a provider that knows the
-context is the baseline can simply say nothing, instead of inventing a token
-for the default; and a hook that is broken cannot be mistaken for one that
-deliberately said "baseline".
+Only a non-zero exit passes along, and after every hook abstains the directory
+table runs. That distinction is the point: a provider that *knows* the answer
+is the baseline can say so instead of inventing a token for it, and a broken
+hook cannot be mistaken for one that deliberately said "baseline".
 
-The name is validated as a DNS label (`a-z`, `0-9`, hyphen; no leading or
-trailing hyphen; 63 max), because it becomes a directory component and a pool
-id. An invalid name is a hard error, never a silent fall back to the default.
+**Veto** (`guard.d`): **every** hook runs and **any refusal refuses**. Adding a
+guard may only ever make things stricter, or a second guard could silently
+cancel the first. A hook that cannot run counts as a refusal -- a safety check
+that failed has not cleared anything.
+
+The profile name is validated as a DNS label (`a-z`, `0-9`, hyphen; no leading
+or trailing hyphen; 63 max), because it becomes a directory component and a
+pool id. An invalid name is a hard error, never a silent fall back.
 
 ### A pre-launch check (guard)
 
-valet-key can run one optional check *before* it launches, and let it **warn**
-or **refuse**. Implement the `guard <profile>` verb in
-`$VALET_KEY_CONFIG/context`: exit `0` to proceed, `2` to warn and continue, `1`
-to refuse and abort. The hook owns the message.
+valet-key runs every executable in `$VALET_KEY_CONFIG/hooks/guard.d/` before
+it launches, with the chosen profile as `$1`: exit `0` to proceed, `2` to warn
+and continue, `1` to refuse and abort. The hook owns the message.
 
-It's a general seam: wire in whatever coherence check you want. One example is
-a hard account boundary, where the guard refuses to start the personal account
-inside a work tree. But it could gate on anything: a network, a mounted
-volume, the time of day.
+**Any refusal refuses**, and a hook that cannot run counts as one. That is what
+lets unrelated checks compose: a hard account boundary refusing the personal
+account inside a work tree, and a VPN check, are two files that never mention
+each other. Adding one can only make things stricter.
 
 > **This is a reminder, not a wall.** The guard reflects and refuses; it does
 > not enforce. If you need a real boundary (say, a zero-data-retention tree one

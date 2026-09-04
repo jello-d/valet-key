@@ -1,103 +1,100 @@
 #!/bin/sh
-# resolve.t - the resolve seam's contract: when is the context hook's answer
-# authoritative, and when does valet-key fall back to its own directory rule?
+# resolve.t - the two hook seams: profile.d SELECTS, guard.d VETOES.
 #
-# The distinction under test is between a hook that ANSWERED and one that
-# COULD NOT. Exit 0 is authoritative even when the output is empty ("no
-# special context here"); only a non-zero exit falls through to the matcher.
-# Getting that wrong is not cosmetic: it is the difference between a broken
-# integration surfacing and it silently re-enabling directory guessing.
+# valet-key must decide two things it cannot always know: which profile applies
+# here, and whether it may launch at all. They are irreducibly different -- a
+# veto is not a profile name, a selection cannot say "stop" -- so they are two
+# seams, and a hook's DIRECTORY says which question it answers. No verb
+# argument, no dispatch, and no need to answer a question you do not care about.
 #
-# resolve_profile is extracted from bin/valet-key and driven directly, so the
-# test exercises the real function rather than a copy of its logic. Nothing
-# outside the scratch dir is read or written.
+# The properties that matter, and why:
+#   selection: first hook that ANSWERS wins; a non-zero exit means "I cannot
+#              tell" and is the ONLY thing that passes to the next hook. Empty
+#              output with exit 0 is a real answer ("definitely the default"),
+#              so a provider that knows the baseline can say so instead of
+#              inventing a token -- and a BROKEN hook cannot be mistaken for
+#              one that deliberately said "baseline".
+#   veto:      EVERY hook runs and ANY refusal refuses. Adding a guard must
+#              only ever make things stricter, or a second guard could silently
+#              cancel the first.
+#
+# Drives the real extracted functions. Nothing outside the scratch dir.
 set -eu
 
 . "$(dirname "$0")/lib.sh"
 harness_init resolve
 
 VK=$HERE/bin/valet-key
-mkdir -p "$T/cfg"
+mkdir -p "$T/cfg/hooks/profile.d" "$T/cfg/hooks/guard.d"
+PD=$T/cfg/hooks/profile.d
+GD=$T/cfg/hooks/guard.d
 
-# Pull the seam out of the engine: valid_profile, here_dir, resolve_profile.
-fns=$(sed -n '/^valid_profile() {/,/^}/p;/^here_dir() {/,/^}/p;
-              /^resolve_profile() {/,/^}/p' "$VK")
-[ -n "$fns" ] || fail "could not extract the resolve seam from bin/valet-key"
+fns=$(sed -n '/^valid_profile() {/,/^}/p;/^_hooks_in() {/,/^}/p;
+              /^here_dir() {/,/^}/p;/^resolve_profile() {/,/^}/p;
+              /^guard_check() {/,/^}/p' "$VK")
+[ -n "$fns" ] || fail "could not extract the seams from bin/valet-key"
 
-# Drive it with a scratch config and a known default. cd into T so the
-# directory matcher has a stable, non-repo context to look at.
-resolve() {
+drive() {   # <expr>
   ( cd "$T" && env VALET_KEY_CONFIG="$T/cfg" sh -c "
       set -eu
       DEFAULT_PROFILE=personal
       VALET_KEY_CONFIG=\$VALET_KEY_CONFIG
+      VALET_KEY_HOOKS=\$VALET_KEY_CONFIG/hooks
       $fns
-      resolve_profile" ) 2>/dev/null
+      $1" )
 }
-resolve_rc() {   # same, but report the status and let stderr through
-  ( cd "$T" && env VALET_KEY_CONFIG="$T/cfg" sh -c "
-      set -eu
-      DEFAULT_PROFILE=personal
-      VALET_KEY_CONFIG=\$VALET_KEY_CONFIG
-      $fns
-      resolve_profile" ) 2>&1
-}
+resolve()    { drive resolve_profile 2>/dev/null; }
+resolve_rc() { drive resolve_profile 2>&1; }
+guard_rc()   { _r=0; drive "guard_check personal" >/dev/null 2>&1 || _r=$?
+               echo "$_r"; }
+mkhook() { printf '%s\n' "$2" > "$1"; chmod +x "$1"; }
 
-# hook <stdout> <exit>
-hook() {
-  { echo '#!/bin/sh'
-    echo 'case "${1:-}" in'
-    printf "  resolve) printf '%%s' \"%s\"; exit %s ;;\n" "$1" "$2"
-    echo '  *) exit 0 ;;'
-    echo 'esac'
-  } > "$T/cfg/context"
-  chmod +x "$T/cfg/context"
-}
+# --- no hooks: the built-in rule, then the default -------------------------
+[ "$(resolve)" = personal ] || fail "no hooks: want the default profile"
+[ "$(guard_rc)" = 0 ]       || fail "no guards: want proceed"
 
-# --- no hook at all: the built-in rule, then the default ---------------------
-rm -f "$T/cfg/context"
-[ "$(resolve)" = personal ] || fail "no hook: want the default profile"
+# --- selection: a hook that answers wins -----------------------------------
+mkhook "$PD/50-a" '#!/bin/sh
+echo manifest'
+[ "$(resolve)" = manifest ] || fail "a profile hook's answer was ignored"
 
-# --- exit 0 with a token: authoritative --------------------------------------
-hook manifest 0
-[ "$(resolve)" = manifest ] || fail "hook token ignored: got '$(resolve)'"
+# --- selection: ORDER decides, not luck ------------------------------------
+# Two providers may legitimately disagree, so the operator orders them.
+mkhook "$PD/10-first" '#!/bin/sh
+echo winner'
+[ "$(resolve)" = winner ] || fail "name order did not decide: got $(resolve)"
 
-# --- exit 0 with EMPTY: also authoritative, and means the DEFAULT ------------
-# The matcher must NOT run. A profiles file that would match everything proves
-# it: if the fallthrough happened, the answer would be 'matched', not the
-# default.
-printf "matched %s\n" "$T" > "$T/cfg/profiles"
-hook "" 0
+# --- selection: non-zero = "cannot tell" and passes to the NEXT hook -------
+mkhook "$PD/10-first" '#!/bin/sh
+echo ignored-because-it-failed
+exit 1'
+[ "$(resolve)" = manifest ] ||
+  fail "an abstaining hook did not pass to the next: got $(resolve)"
+
+# --- selection: exit 0 + EMPTY is an ANSWER, and stops the chain -----------
+# It means "definitely the default here". If it fell through, a provider could
+# not say that, and the cwd table would start guessing behind its back.
+printf 'matched %s\n' "$T" > "$T/cfg/profiles"
+mkhook "$PD/10-first" '#!/bin/sh
+exit 0'
 got=$(resolve)
 [ "$got" = personal ] ||
-  fail "empty+exit0 fell through to the matcher (got '$got', want 'personal')"
+  fail "empty+exit0 did not stop the chain (got '$got', want personal)"
+rm -f "$PD/10-first"
 
-# --- non-zero: could not tell, so the matcher DOES run -----------------------
-hook "" 1
-got=$(resolve)
-[ "$got" = matched ] ||
-  fail "a failing hook did not fall through (got '$got', want 'matched')"
+# ...whereas when every hook abstains, the cwd table DOES run.
+mkhook "$PD/50-a" '#!/bin/sh
+exit 1'
+[ "$(resolve)" = matched ] ||
+  fail "all-abstain did not fall through to the cwd rule: $(resolve)"
+rm -f "$T/cfg/profiles" "$PD"/*
 
-# ...and with no matcher entry, a failing hook still lands on the default.
-rm -f "$T/cfg/profiles"
-[ "$(resolve)" = personal ] || fail "failing hook + no rule: want the default"
-
-# A hook that fails but PRINTS must not have its output used: it did not
-# answer, so the text is not an answer either.
-printf "matched %s\n" "$T" > "$T/cfg/profiles"
-hook someprofile 1
-got=$(resolve)
-[ "$got" != someprofile ] ||
-  fail "output of a FAILING hook was used as the answer"
-[ "$got" = matched ] || fail "failing hook: want the matcher, got '$got'"
-rm -f "$T/cfg/profiles"
-
-# --- an invalid profile is an ERROR, never a silent default ------------------
-# The name becomes a directory component (<base>-<profile>) and a pool id, so a
-# hook returning a path fragment would choose where valet-key writes. Silently
-# resolving it to the default would route a work agent to the personal account.
+# --- selection: an unusable name is an ERROR, never a silent default -------
+# The name becomes a directory component, so a hook returning a path fragment
+# would choose where valet-key writes.
 for bad in '../../etc' 'has space' 'UPPER' 'under_score' '-lead' 'trail-'; do
-  hook "$bad" 0
+  mkhook "$PD/50-a" "#!/bin/sh
+echo '$bad'"
   out=$(resolve_rc) && fail "invalid profile '$bad' was accepted"
   case $out in
     *"invalid profile"*) ;;
@@ -105,28 +102,48 @@ for bad in '../../etc' 'has space' 'UPPER' 'under_score' '-lead' 'trail-'; do
   esac
   [ "$out" = personal ] && fail "invalid profile '$bad' became the default"
 done
+rm -f "$PD"/*
 
-# ...and the legal shapes still pass.
-for good in personal manifest client-a x9; do
-  hook "$good" 0
-  [ "$(resolve)" = "$good" ] || fail "valid profile '$good' was rejected"
-done
+# --- veto: any refusal refuses ----------------------------------------------
+mkhook "$GD/50-ok" '#!/bin/sh
+exit 0'
+[ "$(guard_rc)" = 0 ] || fail "an allowing guard blocked the launch"
 
-# --- surrounding whitespace and extra lines are trimmed, not fatal -----------
-hook "manifest
-second-line" 0
-[ "$(resolve)" = manifest ] || fail "hook output not reduced to its first line"
+mkhook "$GD/10-no" '#!/bin/sh
+exit 1'
+[ "$(guard_rc)" = 1 ] || fail "a refusing guard did not refuse"
 
-hook "  manifest  " 0
-[ "$(resolve)" = manifest ] || fail "surrounding whitespace not trimmed"
+# ...and order does not matter for a veto: strictest wins wherever it sits.
+rm -f "$GD"/*
+mkhook "$GD/10-ok" '#!/bin/sh
+exit 0'
+mkhook "$GD/90-no" '#!/bin/sh
+exit 1'
+[ "$(guard_rc)" = 1 ] || fail "a LATER refusal was cancelled by an earlier ok"
 
-# ...but INTERIOR whitespace is rejected, not welded shut. Stripping all space
-# would turn an obviously-wrong answer into a legal-looking one.
-hook "has space" 0
-out=$(resolve_rc) && fail "'has space' was accepted"
-case $out in
-  *"invalid profile"*) ;;
-  *) fail "'has space' was silently mangled rather than rejected: '$out'" ;;
-esac
+# --- veto: a guard that cannot RUN counts as a refusal ---------------------
+# A safety check that failed has not cleared anything; failing open would be
+# the one direction this must never fail in.
+rm -f "$GD"/*
+mkhook "$GD/50-broken" '#!/bin/sh
+exec definitely-not-a-real-command'
+[ "$(guard_rc)" = 1 ] || fail "a broken guard failed OPEN"
+
+# --- veto: warn proceeds, and a warn cannot mask a refusal -----------------
+rm -f "$GD"/*
+mkhook "$GD/50-warn" '#!/bin/sh
+exit 2'
+[ "$(guard_rc)" = 0 ] || fail "a warning guard blocked the launch"
+mkhook "$GD/60-no" '#!/bin/sh
+exit 1'
+[ "$(guard_rc)" = 1 ] || fail "a warn masked a refusal"
+
+# --- the seams are INDEPENDENT ---------------------------------------------
+# A veto-only integrator writes one file in guard.d and says nothing about
+# profiles; that must not affect selection at all.
+rm -f "$PD"/* "$GD"/*
+mkhook "$GD/50-vetoonly" '#!/bin/sh
+exit 0'
+[ "$(resolve)" = personal ] || fail "a guard hook influenced selection"
 
 pass

@@ -25,11 +25,16 @@
 #   valet-key shims-dir          print the shims dir
 #   valet-key rehash             re-point existing shims at this engine
 #
-# SEAMS (optional; default is a single "personal" profile, proceed):
-#   $VALET_KEY_CONFIG/context resolve          -> the active profile name
-#   $VALET_KEY_CONFIG/context guard <profile>  -> 0 ok / 2 warn / 1 refuse (msg)
+# SEAMS (optional; default is a single "personal" profile, proceed). A hook's
+# DIRECTORY says which question it answers, so there is no verb to dispatch and
+# no need to answer one you do not care about:
+#   $VALET_KEY_CONFIG/hooks/profile.d/*  -> print a profile name (first that
+#                                           ANSWERS wins; non-zero = cannot
+#                                           tell, try the next)
+#   $VALET_KEY_CONFIG/hooks/guard.d/*    -> 0 ok / 2 warn / 1 refuse (msg).
+#                                           EVERY hook runs; any refusal wins
 #   $VALET_KEY_CONFIG/profiles  -> "<profile> <matchdir>" cwd-resolver lines
-#                                  (the resolve hook, if present, wins)
+#                                  (consulted only when every hook abstains)
 #
 # POSIX sh (dash). Non-privileged. tackup fills the seams; standalone it just
 # works with one profile.
@@ -142,46 +147,72 @@ valid_profile() {   # <name>
   [ "${#1}" -le 63 ]
 }
 
-# --- the resolve seam: which profile for the current context? ----------------
-# Hook wins; else the built-in cwd matcher over $VALET_KEY_CONFIG/profiles;
-# else the default profile. The context is the git root if any, else $PWD.
+# --- the hook seams ----------------------------------------------------------
+# valet-key must decide two things it cannot always know by itself:
 #
-# When a hook is installed it is the AUTHORITY, and its EXIT STATUS says
-# whether it answered:
+#   WHICH PROFILE applies here.   Its own answer is a cwd->profile table, which
+#                                 is a guess from location; location cannot
+#                                 express, say, which unix group this process
+#                                 holds.
+#   MAY I LAUNCH AT ALL.          Its own answer is "always". Coherence can
+#                                 depend on facts valet-key has no view of.
 #
-#   exit 0 + a token  -> that profile.
-#   exit 0 + empty    -> it answered "no special context here": use the
-#                        default. A real answer, not an abstention.
-#   non-zero          -> it could not tell. ONLY this falls through to the
-#                        matcher below.
+# They are irreducibly different: a veto is not a profile name, and a selection
+# cannot say "stop". So there are two seams, and a hook's DIRECTORY says which
+# question it answers -- no verb argument, no dispatch, and no need to answer a
+# question you do not care about. Someone adding "refuse when the VPN is down"
+# writes one executable in guard.d and says nothing about profiles.
 #
-# Empty used to mean "no opinion" and fall through, which left a provider no
-# way to say "I know, and it is the baseline": it had to invent a positive
-# token for the default, so every integrator's shim carried the same
-# `${answer:-personal}` mapping to manufacture one. Worse, a hook that FAILED
-# was indistinguishable from one deliberately saying "baseline", so a broken
-# integration silently re-enabled cwd guessing instead of surfacing. The exit
-# status now carries that distinction, and the mapping leaves every shim.
+#   $VALET_KEY_HOOKS/profile.d/*   may print a profile name
+#   $VALET_KEY_HOOKS/guard.d/*     may veto
+#
+# Each is run in NAME ORDER with the agent in the environment. Multiple
+# providers compose without knowing about each other, which one executable
+# answering both questions could never do.
+VALET_KEY_HOOKS=${VALET_KEY_HOOKS:-$VALET_KEY_CONFIG/hooks}
+
+_hooks_in() {   # <dir> -- executable hooks, name-ordered
+  [ -d "$VALET_KEY_HOOKS/$1" ] || return 0
+  for _hk in "$VALET_KEY_HOOKS/$1"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] && printf '%s\n' "$_hk"
+  done
+}
+
 here_dir() {
   _r=$(git rev-parse --show-toplevel 2>/dev/null || true)
   ( cd "${_r:-$PWD}" 2>/dev/null && pwd -P ) || printf '%s\n' "$PWD"
 }
+
+# SELECTION. First hook that ANSWERS wins; the rest are not consulted. A hook
+# answers by exiting 0, and its stdout is the answer:
+#
+#   exit 0 + a name   -> that profile.
+#   exit 0 + empty    -> "definitely the default here". A real answer, so the
+#                        chain STOPS and the cwd table is not consulted.
+#   non-zero          -> "I cannot tell". Only this passes to the next hook,
+#                        and after all of them, to the cwd table.
+#
+# That distinction is the whole reason the status matters. Without it a
+# provider that KNOWS the answer is the baseline has no way to say so -- it
+# must invent a positive token for the default -- and worse, a BROKEN hook
+# becomes indistinguishable from one deliberately saying "baseline", so a
+# failed integration silently re-enables guessing instead of surfacing.
 resolve_profile() {
-  if [ -x "$VALET_KEY_CONFIG/context" ]; then
-    if _p=$("$VALET_KEY_CONFIG/context" resolve 2>/dev/null); then
-      # First line, with surrounding whitespace trimmed. Deliberately NOT a
-      # blanket space-strip: that would silently weld "has space" into a
-      # legal-looking "hasspace" rather than rejecting it below.
-      _p=$(printf '%s' "$_p" | head -1)
-      _p=${_p#"${_p%%[![:space:]]*}"}
-      _p=${_p%"${_p##*[![:space:]]}"}
-      [ -n "$_p" ] || _p=$DEFAULT_PROFILE
-      valid_profile "$_p" || {
-        echo "valet-key: context hook returned an invalid profile: '$_p'" >&2
-        exit 1; }
-      printf '%s\n' "$_p"; return 0
-    fi
-  fi
+  for _hk in $(_hooks_in profile.d); do
+    _p=$(VALET_KEY_AGENT="${AGENT:-}" "$_hk" 2>/dev/null) || continue
+    # First line, with surrounding whitespace trimmed. Deliberately NOT a
+    # blanket space-strip: that would silently weld "has space" into a
+    # legal-looking "hasspace" rather than rejecting it below.
+    _p=$(printf '%s' "$_p" | head -1)
+    _p=${_p#"${_p%%[![:space:]]*}"}
+    _p=${_p%"${_p##*[![:space:]]}"}
+    [ -n "$_p" ] || _p=$DEFAULT_PROFILE
+    valid_profile "$_p" || {
+      echo "valet-key: profile hook returned an invalid profile: '$_p'" >&2
+      echo "  $_hk" >&2
+      exit 1; }
+    printf '%s\n' "$_p"; return 0
+  done
   if [ -r "$VALET_KEY_CONFIG/profiles" ]; then
     _h=$(here_dir)
     # "<profile> <matchdir>"; first dir the context sits under wins.
@@ -197,17 +228,28 @@ resolve_profile() {
   printf '%s\n' "$DEFAULT_PROFILE"
 }
 
-# --- the guard seam: proceed / warn / refuse for (profile, context) ----------
-# Hook decides; no hook -> proceed. Exit: 0 ok, 2 warn (print, continue), 1
-# refuse (print, abort). The hook owns the message (its stderr passes through).
+# VETO. EVERY hook runs and ANY refusal refuses. That composition is not a
+# style choice: adding a guard must only ever make things stricter, never
+# weaker, or a second guard could silently cancel the first. So the strictest
+# verdict wins -- any 1 refuses, else any 2 warns, else proceed.
+#
+# Exit: 0 ok, 2 warn (print, continue), 1 refuse (print, abort). Anything else
+# is the hook itself failing, and a failing safety check counts as a REFUSAL:
+# a guard that cannot run has not cleared anything. The hook owns the message
+# (its stderr passes through).
 guard_check() {   # profile
-  [ -x "$VALET_KEY_CONFIG/context" ] || return 0
-  # `|| _g=$?` so a non-zero exit does NOT trip set -e before we read it.
-  _g=0; "$VALET_KEY_CONFIG/context" guard "$1" || _g=$?
-  case $_g in
-    0|2) return 0 ;;                     # ok, or warn (hook already printed)
-    *)   exit 1 ;;                       # refuse (hook already printed)
-  esac
+  _worst=0
+  for _hk in $(_hooks_in guard.d); do
+    _g=0
+    VALET_KEY_AGENT="${AGENT:-}" VALET_KEY_PROFILE="$1" "$_hk" "$1" || _g=$?
+    case $_g in
+      0) ;;
+      2) [ "$_worst" = 0 ] && _worst=2 ;;
+      *) _worst=1 ;;
+    esac
+  done
+  [ "$_worst" = 1 ] && exit 1
+  return 0
 }
 
 # --- run an agent: resolve -> guard -> config dir -> slot -> exec -------------
@@ -317,60 +359,66 @@ _dwarn() { mk_warn "$1"; _warn=$((_warn + 1)); }
 _dfail() { mk_bad "$1"; _fail=$((_fail + 1)); }
 _dfix()  { mk_fix "$1"; }
 
-# Is the OPTIONAL context hook, if installed, actually working? valet-key owns
-# this question: it is the one that declared the seam, so it is the one that
-# can tell a hook that ANSWERS from a hook that is merely failing.
+# Are the OPTIONAL hooks, if installed, actually working? valet-key owns this
+# question: it declared the seams, so it is the only thing that can tell a hook
+# that ANSWERS from one that is merely failing.
 #
-# It matters because both of this seam's failure modes are SILENT by design.
-# resolve treats a non-zero exit as "I cannot tell" and quietly falls back to
-# the directory rule; guard treats exit 2 as "warn, then proceed". So a hook
-# broken by, say, a provider renaming the verb it calls keeps working in the
-# sense that nothing errors -- while whatever coherence it was enforcing has
-# silently stopped. That happened.
+# It matters because both seams treat failure as a legitimate answer BY DESIGN.
+# A profile hook that exits non-zero means "I cannot tell" and is skipped; a
+# guard that exits non-zero refuses. So a hook broken by its provider renaming
+# a verb keeps "working" in the sense that nothing errors -- while selection
+# has silently fallen back to guessing, or every launch is being refused for
+# the wrong reason. That happened.
 #
-# Deliberately GENERIC: nothing here knows or names any particular provider.
-# It asks only what the CONTRACT promises -- a hook that answers is quiet, exits
-# within the documented range, and returns a usable profile name.
-_doctor_context_hook() {
-  _h=$VALET_KEY_CONFIG/context
-  echo; echo "context hook (optional; the resolve/guard seam)"
-  if [ ! -e "$_h" ]; then
-    _dna "no context hook; the built-in directory rule decides"
-    return 0
-  fi
-  [ -x "$_h" ] || { _dfail "context hook is not executable: $_h"
-    _dfix "chmod +x $_h"; return 0; }
+# Deliberately GENERIC: nothing here knows or names any particular provider. It
+# asks only what the contract promises.
+_doctor_hooks() {
+  echo; echo "hooks (optional; profile.d selects, guard.d vetoes)"
 
-  # A hook that answers is QUIET. Anything on stderr from a plain `resolve` is
-  # the hook complaining, and the complaint is invisible in normal operation
-  # because resolve discards stderr and falls back.
-  _rerr=$("$_h" resolve 2>&1 >/dev/null) || true
-  _rrc=0; "$_h" resolve >/dev/null 2>&1 || _rrc=$?
-  if [ -n "$_rerr" ]; then
-    _dfail "context hook resolve writes to stderr: $_rerr"
-    _dfix "its provider is failing; resolve silently falls back to the rule"
-  elif [ "$_rrc" -gt 1 ]; then
-    _dfail "context hook resolve exited $_rrc (expected 0, or 1 for 'cannot')"
-  else
-    _dok "context hook answers resolve"
-    _rout=$("$_h" resolve 2>/dev/null | head -1 | tr -d '[:space:]') || true
-    if [ "$_rrc" = 0 ] && [ -n "$_rout" ] && ! valid_profile "$_rout"; then
-      _dfail "context hook returned an unusable profile: '$_rout'"
+  # A file at the OLD single-hook path is no longer consulted. Silently
+  # ignoring it would leave someone believing a boundary is enforced when it
+  # is not, which is the worst failure this seam has.
+  if [ -e "$VALET_KEY_CONFIG/context" ]; then
+    _dfail "$VALET_KEY_CONFIG/context is no longer read"
+    _dfix "split it: a selector in hooks/profile.d, a veto in hooks/guard.d"
+  fi
+
+  _any=0
+  for _hk in $(_hooks_in profile.d); do
+    _any=1
+    _err=$(VALET_KEY_AGENT=doctor "$_hk" 2>&1 >/dev/null) || true
+    _rc=0; VALET_KEY_AGENT=doctor "$_hk" >/dev/null 2>&1 || _rc=$?
+    _out=$(VALET_KEY_AGENT=doctor "$_hk" 2>/dev/null | head -1 \
+           | tr -d '[:space:]') || true
+    if [ -n "$_err" ]; then
+      # A hook that answers is QUIET. Noise on stderr is it complaining, and
+      # the complaint is invisible in use: selection discards stderr and moves
+      # on to the next hook.
+      _dfail "profile.d/${_hk##*/} writes to stderr: $_err"
+    elif [ "$_rc" = 0 ] && [ -n "$_out" ] && ! valid_profile "$_out"; then
+      _dfail "profile.d/${_hk##*/} returned an unusable profile: '$_out'"
+    elif [ "$_rc" = 0 ]; then
+      _dok "profile.d/${_hk##*/} answers${_out:+ ($_out)}"
+    else
+      _dok "profile.d/${_hk##*/} abstains (exit $_rc)"
     fi
-  fi
+  done
 
-  # guard's documented range is 0 ok / 2 warn / 1 refuse. Anything else is the
-  # hook itself failing -- 127 is a missing command, and reads as REFUSE, so a
-  # broken guard blocks every launch instead of guarding anything.
-  _gerr=$("$_h" guard "${DEFAULT_PROFILE}" 2>&1 >/dev/null) || true
-  _grc=0; "$_h" guard "${DEFAULT_PROFILE}" >/dev/null 2>&1 || _grc=$?
-  case $_grc in
-    0|1|2) _dok "context hook answers guard (exit $_grc)" ;;
-    *) _dfail "context hook guard exited $_grc (expected 0, 1 or 2)"
-       _dfix "anything outside that range is read as REFUSE" ;;
-  esac
-  [ -n "$_gerr" ] && [ "$_grc" = 0 ] &&
-    _dwarn "context hook guard wrote to stderr while allowing: $_gerr"
+  for _hk in $(_hooks_in guard.d); do
+    _any=1
+    _rc=0
+    VALET_KEY_AGENT=doctor VALET_KEY_PROFILE="$DEFAULT_PROFILE" \
+      "$_hk" "$DEFAULT_PROFILE" >/dev/null 2>&1 || _rc=$?
+    case $_rc in
+      0) _dok "guard.d/${_hk##*/} allows the default profile" ;;
+      1) _dok "guard.d/${_hk##*/} refuses here (exit 1)" ;;
+      2) _dok "guard.d/${_hk##*/} warns here (exit 2)" ;;
+      *) _dfail "guard.d/${_hk##*/} exited $_rc (expected 0, 1 or 2)"
+         _dfix "a guard that cannot run counts as a REFUSAL" ;;
+    esac
+  done
+
+  [ "$_any" = 0 ] && _dna "no hooks; the built-in directory rule decides"
   return 0
 }
 
@@ -436,7 +484,7 @@ m_doctor() {
     _dfix "re-login: valet-key login stale"
   fi
 
-  _doctor_context_hook
+  _doctor_hooks
 
   echo
   echo "valet-key doctor: $_warn warning(s), $_fail problem(s)"
