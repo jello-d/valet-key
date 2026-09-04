@@ -317,6 +317,63 @@ _dwarn() { mk_warn "$1"; _warn=$((_warn + 1)); }
 _dfail() { mk_bad "$1"; _fail=$((_fail + 1)); }
 _dfix()  { mk_fix "$1"; }
 
+# Is the OPTIONAL context hook, if installed, actually working? valet-key owns
+# this question: it is the one that declared the seam, so it is the one that
+# can tell a hook that ANSWERS from a hook that is merely failing.
+#
+# It matters because both of this seam's failure modes are SILENT by design.
+# resolve treats a non-zero exit as "I cannot tell" and quietly falls back to
+# the directory rule; guard treats exit 2 as "warn, then proceed". So a hook
+# broken by, say, a provider renaming the verb it calls keeps working in the
+# sense that nothing errors -- while whatever coherence it was enforcing has
+# silently stopped. That happened.
+#
+# Deliberately GENERIC: nothing here knows or names any particular provider.
+# It asks only what the CONTRACT promises -- a hook that answers is quiet, exits
+# within the documented range, and returns a usable profile name.
+_doctor_context_hook() {
+  _h=$VALET_KEY_CONFIG/context
+  echo; echo "context hook (optional; the resolve/guard seam)"
+  if [ ! -e "$_h" ]; then
+    _dna "no context hook; the built-in directory rule decides"
+    return 0
+  fi
+  [ -x "$_h" ] || { _dfail "context hook is not executable: $_h"
+    _dfix "chmod +x $_h"; return 0; }
+
+  # A hook that answers is QUIET. Anything on stderr from a plain `resolve` is
+  # the hook complaining, and the complaint is invisible in normal operation
+  # because resolve discards stderr and falls back.
+  _rerr=$("$_h" resolve 2>&1 >/dev/null) || true
+  _rrc=0; "$_h" resolve >/dev/null 2>&1 || _rrc=$?
+  if [ -n "$_rerr" ]; then
+    _dfail "context hook resolve writes to stderr: $_rerr"
+    _dfix "its provider is failing; resolve silently falls back to the rule"
+  elif [ "$_rrc" -gt 1 ]; then
+    _dfail "context hook resolve exited $_rrc (expected 0, or 1 for 'cannot')"
+  else
+    _dok "context hook answers resolve"
+    _rout=$("$_h" resolve 2>/dev/null | head -1 | tr -d '[:space:]') || true
+    if [ "$_rrc" = 0 ] && [ -n "$_rout" ] && ! valid_profile "$_rout"; then
+      _dfail "context hook returned an unusable profile: '$_rout'"
+    fi
+  fi
+
+  # guard's documented range is 0 ok / 2 warn / 1 refuse. Anything else is the
+  # hook itself failing -- 127 is a missing command, and reads as REFUSE, so a
+  # broken guard blocks every launch instead of guarding anything.
+  _gerr=$("$_h" guard "${DEFAULT_PROFILE}" 2>&1 >/dev/null) || true
+  _grc=0; "$_h" guard "${DEFAULT_PROFILE}" >/dev/null 2>&1 || _grc=$?
+  case $_grc in
+    0|1|2) _dok "context hook answers guard (exit $_grc)" ;;
+    *) _dfail "context hook guard exited $_grc (expected 0, 1 or 2)"
+       _dfix "anything outside that range is read as REFUSE" ;;
+  esac
+  [ -n "$_gerr" ] && [ "$_grc" = 0 ] &&
+    _dwarn "context hook guard wrote to stderr while allowing: $_gerr"
+  return 0
+}
+
 # doctor: the ENVIRONMENTAL sweep -- the runtime health valet-key can neither
 # provision nor repair (PATH order, leaked API keys, pool saturation, slots near
 # their cap). Read-only, launches nothing; complements `check` (declarative
@@ -378,6 +435,8 @@ m_doctor() {
     IFS=$_oifs
     _dfix "re-login: valet-key login stale"
   fi
+
+  _doctor_context_hook
 
   echo
   echo "valet-key doctor: $_warn warning(s), $_fail problem(s)"

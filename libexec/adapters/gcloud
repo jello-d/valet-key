@@ -14,10 +14,10 @@
 # per session (the race valet-key's pools exist to solve), so ADAPTER_SLOTS
 # stays 0
 # and each profile maps straight to its config dir. The work profile's dir is
-# KERNEL-SEALED (root:<work group> 2770 + default ACL, by modules/work-guard),
-# so corp cloud creds are reachable only from inside the work group -- stronger
-# than an env-only split, and the reason gcloud gets a sealed dir where claude's
-# ~/.claude-work is merely env-selected.
+# KERNEL-SEALED by whatever provisions the boundary (root:<group> 2770 + a
+# default ACL), so corp cloud creds are reachable only from inside that group --
+# stronger than an env-only split. valet-key does not arrange that and does not
+# need to know who does: it only selects the dir.
 
 ADAPTER_ENV=CLOUDSDK_CONFIG        # the whole gcloud identity is this one dir
 ADAPTER_BASE=$HOME/.config/gcloud  # personal (gcloud's own default); the work

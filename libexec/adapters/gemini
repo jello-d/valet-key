@@ -10,9 +10,9 @@
 # GEMINI_CLI_HOME is a HOME override (gemini appends `.gemini` itself), not a
 # direct config-dir var. The default profile's base is $HOME, so a personal
 # gemini lands at its native ~/.gemini; a work profile is pinned to a clean,
-# sealable dir via the $VALET_KEY_CONFIG/dirs override (tackup ->
-# ~/.config/gemini-
-# <group>, kernel-sealed by work-guard for the corp Google account).
+# sealable dir via the $VALET_KEY_CONFIG/dirs override, which an integrator
+# points at a kernel-sealed location. valet-key selects the dir; who seals it,
+# and where, is not its business.
 
 ADAPTER_ENV=GEMINI_CLI_HOME        # a HOME; gemini appends /.gemini
 ADAPTER_BASE=$HOME                 # default profile -> $HOME -> ~/.gemini
