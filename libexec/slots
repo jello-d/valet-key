@@ -164,17 +164,53 @@ human_ago() {
 pool_counts() {
   _t=0; _w=0
   for _s in "$1"/slot-*; do
-    [ -d "$_s" ] || continue
+    is_slot "$_s" || continue
     _t=$((_t + 1))
     [ -s "$_s/$CRED_FILE" ] && _w=$((_w + 1))
   done
   echo "$_w $_t"
 }
 
+# provision CONVERGES the pool on N: it creates what is missing and removes
+# what is surplus, which is what makes re-running it a resize rather than a
+# high-water mark. It used to only ever grow, so `provision ... 2` over a pool
+# of 5 left 5 -- and `check` called that healthy, because nothing recorded what
+# had been asked for. Asserted 2, actual 5, green marker.
+#
+# So N is WRITTEN DOWN (.size). That is what lets `check` audit the size at
+# all: a declared value is the only thing actual state can be compared against.
+#
+# Shrinking is careful, because a surplus slot is not necessarily disposable:
+#   - LEASED  -> never removed. A live session is using it.
+#   - WARM    -> never removed silently. It holds a real login that someone
+#                sat through a browser flow for; throwing that away to satisfy
+#                an arithmetic target is not a trade this should make alone.
+#   - cold and unleased -> removed. Nothing is lost.
+# Whatever cannot go is REPORTED, so the gap between asked-for and actual is
+# visible instead of accumulating quietly.
+# Is <path> one of this pool's slots? The `slot-*` glob is NOT enough on its
+# own. An agent creates its own lock directory beside the slot it is using,
+# named <slot>.lock -- it matches the glob, and it IS a directory, so the bare
+# `[ -d ]` test that used to guard these loops let it straight through.
+#
+# The damage was live and quiet: a real pool of 10 reported 14 slots (so warm
+# and leased counts, saturation warnings, and `check` were all wrong), and
+# cmd_lease walked the same list, so a lock directory could be leased and
+# handed to an agent AS ITS CONFIG DIR.
+#
+# A slot is `slot-` followed by digits and nothing else.
+is_slot() {   # <path>
+  [ -d "$1" ] || return 1
+  _isn=${1##*/slot-}
+  case "$_isn" in ''|*[!0-9]*) return 1 ;; esac
+  return 0
+}
+
 cmd_provision() {
   id=${1:?pool id required}; base=${2:?base dir required}; n=${3:?N required}
   [ -d "$base" ] || die "base dir absent: $base"
   case "$n" in ''|*[!0-9]*) die "N must be a number: $n" ;; esac
+  [ "$n" -ge 1 ] || die "N must be at least 1: $n"
   pd=$(pool_dir "$id"); mkdir -p "$pd"
   chmod 700 "$POOL_ROOT" 2>/dev/null || true
   i=1
@@ -182,32 +218,120 @@ cmd_provision() {
     slot=$pd/slot-$i; mkdir -p "$slot"; chmod 700 "$slot"
     seed_slot "$base" "$slot"; i=$((i + 1))
   done
-  echo "valet-key-slots: $id pool ready ($n slots) at $pd"
+
+  kept=0
+  for slot in "$pd"/slot-*; do
+    is_slot "$slot" || continue
+    _num=${slot##*/slot-}
+    case "$_num" in ''|*[!0-9]*) continue ;; esac
+    [ "$_num" -gt "$n" ] || continue
+    if [ -d "$slot/.lease" ] &&
+       pid_live "$(cat "$slot/.lease/pid" 2>/dev/null || true)"; then
+      warn "$id: ${slot##*/} is over the requested $n but LEASED; kept"
+      kept=$((kept + 1)); continue
+    fi
+    if [ -s "$slot/$CRED_FILE" ]; then
+      warn "$id: ${slot##*/} is over the requested $n but WARM; kept" \
+           "(remove it yourself to discard that login)"
+      kept=$((kept + 1)); continue
+    fi
+    rm -rf "$slot"
+    echo "valet-key-slots: $id removed ${slot##*/} (surplus, cold, unleased)"
+  done
+
+  echo "$n" > "$pd/.size"
+  if [ "$kept" -gt 0 ]; then
+    echo "valet-key-slots: $id pool ready ($n requested, $kept surplus kept)"
+  else
+    echo "valet-key-slots: $id pool ready ($n slots) at $pd"
+  fi
 }
+
+# A per-pool mutex, held only for the reclaim pass below. Reclaiming is
+# INSPECT-then-MODIFY (read a pid, judge it, act on it), and no amount of
+# making the individual steps atomic makes that safe: two leasers can read the
+# same dead pid, and the second then tears down the lock the first just took.
+#
+# Breaking a mutex whose owner is gone is itself an inspect-then-modify, so it
+# is not perfectly safe either -- but reaching it needs a process to have died
+# in the microseconds it holds the mutex, and the alternative (never breaking
+# it) wedges reclaim on this pool forever.
+# It WAITS, briefly, rather than giving up on first contention. Giving up
+# immediately looked tidy and was wrong: the moment reclaim matters most is a
+# reboot, when every holder is dead and several sessions start at once -- and
+# then all but one leaser would fall back to the shared base, which is the
+# exact sharing the pool exists to prevent. The hold is microseconds, so a
+# bounded wait costs nothing and almost never runs twice.
+reclaim_lock() {   # <pooldir>
+  _rl=$1/.reclaim
+  _try=0
+  while [ "$_try" -lt 100 ]; do        # ~2s worst case, never reached in use
+    if mkdir "$_rl" 2>/dev/null; then echo $$ > "$_rl/pid"; return 0; fi
+    _try=$((_try + 1))
+    _rp=$(cat "$_rl/pid" 2>/dev/null || true)
+    if [ -n "$_rp" ] && ! kill -0 "$_rp" 2>/dev/null; then
+      rm -rf "$_rl"; continue          # owner is gone; take it next spin
+    fi
+    sleep 0.02 2>/dev/null || sleep 1
+  done
+  return 1
+}
+reclaim_unlock() { rm -rf "$1/.reclaim"; }
 
 cmd_lease() {
   id=${1:?pool id required}; base=${2:?base dir required}; holder=${3:-$$}
   SLOTS_QUIET=1                        # self-heal quietly on the hot path
   pd=$(pool_dir "$id")
   [ -d "$pd" ] || { echo "$base"; return 0; }   # no pool -> shared base
-  for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
-    lock=$slot/.lease
-    if mkdir "$lock" 2>/dev/null; then
-      echo "$holder" > "$lock/pid"
-      seed_slot "$base" "$slot"; echo "$slot"; return 0
-    fi
-    # occupied: reclaim only when the recorded holder is provably dead. An
-    # empty/absent pid means a claim is mid-flight: treat as busy, never steal.
-    hp=$(cat "$lock/pid" 2>/dev/null || true)
-    if [ -n "$hp" ] && ! pid_live "$hp"; then
+
+  # ONE ordered pass: the first slot that is free, or whose recorded holder is
+  # dead. The order is the policy -- reusing an earlier slot, which is usually
+  # already WARM, beats skipping ahead to a cold one and making the user sign
+  # in again for nothing.
+  #
+  # It runs under the pool's reclaim mutex because recycling is
+  # INSPECT-then-MODIFY: read a pid, judge it, act on it. Making the
+  # individual steps atomic does not make that safe -- two leasers can read the
+  # same dead pid, and the second then tears down the lock the first just took.
+  # That really happened, and it put two live sessions on one credentials file:
+  # the exact race the pool exists to remove, reintroduced by the code meant to
+  # recycle it. Its trigger is not exotic either -- a reboot, then several
+  # sessions starting at once with every recorded holder dead.
+  if reclaim_lock "$pd"; then
+    for slot in "$pd"/slot-*; do
+      is_slot "$slot" || continue
+      lock=$slot/.lease
+      if mkdir "$lock" 2>/dev/null; then
+        echo "$holder" > "$lock/pid"
+        seed_slot "$base" "$slot"
+        reclaim_unlock "$pd"; echo "$slot"; return 0
+      fi
+      # Occupied. An empty or absent pid means a claim is mid-flight, which is
+      # busy, not stale: never steal one.
+      hp=$(cat "$lock/pid" 2>/dev/null || true)
+      [ -n "$hp" ] || continue
+      pid_live "$hp" && continue
       rm -rf "$lock"
       if mkdir "$lock" 2>/dev/null; then
         echo "$holder" > "$lock/pid"
+        seed_slot "$base" "$slot"
+        reclaim_unlock "$pd"; echo "$slot"; return 0
+      fi
+    done
+    reclaim_unlock "$pd"
+  else
+    # Could not serialize within the wait. Claiming a genuinely FREE slot is
+    # still safe without the mutex -- mkdir is atomic and self-exclusive, and
+    # only RECYCLING needs coordination -- so try that before giving up and
+    # sharing the base.
+    for slot in "$pd"/slot-*; do
+      is_slot "$slot" || continue
+      if mkdir "$slot/.lease" 2>/dev/null; then
+        echo "$holder" > "$slot/.lease/pid"
         seed_slot "$base" "$slot"; echo "$slot"; return 0
       fi
-    fi
-  done
+    done
+  fi
   warn "all slots leased for $id; using shared base (races)"
   echo "$base"
 }
@@ -236,7 +360,7 @@ cmd_warm() {
   counts=$(pool_counts "$pd"); warm0=${counts% *}; total=${counts#* }
   target=""
   for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
+    is_slot "$slot" || continue
     seed_slot "$base" "$slot"
     [ -s "$slot/$CRED_FILE" ] || { target=$slot; break; }
   done
@@ -261,7 +385,7 @@ cmd_login_check() {
   echo "valet-key-slots: $id -- $warm/$total warm (cap-warn ${STALE_DAYS}d)"
   _now=$(date +%s)
   for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
+    is_slot "$slot" || continue
     [ -s "$slot/$CRED_FILE" ] || continue
     printf '%s\t%s\t%s\n' "$(mtime "$slot/$CRED_FILE")" "${slot##*/}" \
       "$(slot_refresh_exp "$slot" || echo 0)"
@@ -280,7 +404,7 @@ cmd_force() {
   [ -d "$pd" ] || die "no pool for $id ($pd)"
   oldest=""; omt=0
   for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
+    is_slot "$slot" || continue
     [ -s "$slot/$CRED_FILE" ] || continue
     _m=$(mtime "$slot/$CRED_FILE")
     if [ -z "$oldest" ] || [ "$_m" -lt "$omt" ]; then oldest=$slot; omt=$_m; fi
@@ -302,7 +426,7 @@ cmd_login_stale() {
   [ -d "$pd" ] || die "no pool for $id ($pd)"
   _did=0
   for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
+    is_slot "$slot" || continue
     [ -s "$slot/$CRED_FILE" ] || continue
     _e=$(slot_refresh_exp "$slot") || continue
     [ "$(days_until "$_e")" -lt "$STALE_DAYS" ] || continue
@@ -318,13 +442,22 @@ cmd_login_stale() {
 # stale: across ALL pools, list every WARM slot within STALE_DAYS of its cap --
 # "<id>/<slot> <days>d" a line. READ-ONLY, launches nothing; the attention scan
 # calls it cheaply. Pools nest two levels (<agent>/<profile>).
+# stale [agent] -- with an agent, only that agent's pools.
+#
+# The filter is not a convenience, it is a correctness fix. Which file holds a
+# credential, and the pattern that reads a cap out of it, are PER-AGENT facts
+# supplied by the adapter through the environment. A scan across every agent's
+# pools in one process can only be right for one of them: run it with codex's
+# policy loaded and claude's slots all report "cap unknown", silently, which
+# turns the cap warning into a no-op precisely on the pools that have caps.
+# So the engine loops agents, loads each adapter, and asks for that agent.
 cmd_stale() {
   [ -d "$POOL_ROOT" ] || return 0
-  for pd in "$POOL_ROOT"/*/*; do
+  for pd in "$POOL_ROOT"/${1:-*}/*; do
     [ -d "$pd" ] || continue
     id=${pd#"$POOL_ROOT"/}
     for slot in "$pd"/slot-*; do
-      [ -d "$slot" ] || continue
+      is_slot "$slot" || continue
       [ -s "$slot/$CRED_FILE" ] || continue
       _e=$(slot_refresh_exp "$slot") || continue
       _d=$(days_until "$_e"); [ "$_d" -lt "$STALE_DAYS" ] || continue
@@ -336,7 +469,9 @@ cmd_stale() {
 cmd_sync() {
   id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
   [ -d "$pd" ] || die "no pool for $id ($pd)"
-  for slot in "$pd"/slot-*; do [ -d "$slot" ] && seed_slot "$base" "$slot"; done
+  for slot in "$pd"/slot-*; do
+    is_slot "$slot" && seed_slot "$base" "$slot"
+  done
   echo "valet-key-slots: synced $id pool"
 }
 
@@ -345,7 +480,7 @@ cmd_check() {
   [ -d "$pd" ] || { echo "valet-key-slots: $id pool MISSING ($pd)"; return 1; }
   total=0; warm=0; leased=0; drift=0
   for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
+    is_slot "$slot" || continue
     total=$((total + 1))
     [ -s "$slot/$CRED_FILE" ] && warm=$((warm + 1))
     if [ -d "$slot/.lease" ]; then
@@ -362,6 +497,21 @@ cmd_check() {
   echo "valet-key-slots: $id -- $total slots, $warm warm, $leased leased"
   if [ "$drift" -ne 0 ]; then
     echo "valet-key-slots: $id has $drift dangling link(s)" >&2; return 1
+  fi
+  # Size drift, against the N that provision recorded. A pool with no .size
+  # was made before that was written down, or by hand; there is no declared
+  # value to compare with, so there is nothing to report. Guessing one would
+  # invent drift rather than detect it.
+  if [ -s "$pd/.size" ]; then
+    want=$(cat "$pd/.size" 2>/dev/null || echo "")
+    case "$want" in
+      ''|*[!0-9]*) ;;
+      *) if [ "$total" -ne "$want" ]; then
+           echo "valet-key-slots: $id size drift: $total slots, $want" \
+                "requested" >&2
+           return 1
+         fi ;;
+    esac
   fi
   return 0
 }
@@ -384,7 +534,7 @@ cmd_counts() {
   [ -d "$pd" ] || { echo "0 0 0"; return 1; }
   _t=0; _w=0; _l=0
   for slot in "$pd"/slot-*; do
-    [ -d "$slot" ] || continue
+    is_slot "$slot" || continue
     _t=$((_t + 1))
     [ -s "$slot/$CRED_FILE" ] && _w=$((_w + 1))
     if [ -d "$slot/.lease" ]; then

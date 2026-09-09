@@ -53,6 +53,36 @@ ln -s "$B/$LK" "$P/slot-1/$LK"                    # stale shared link (dangling)
 sh "$SLOTS" sync "$ID" "$B" >/dev/null 2>&1 || fail "sync healing lock failed"
 [ -L "$P/slot-1/$LK" ] && fail "stale lock symlink not healed"
 
+# --- a <slot>.lock sibling is NOT a slot -------------------------------------
+# Found live: the agent creates its own lock directory next to the slot it is
+# using, named <slot>.lock. It matches the `slot-*` glob and it IS a directory,
+# so the bare `[ -d ]` test these loops used let it through as a slot. A real
+# pool of 10 reported 14 -- which threw off warm and leased counts, saturation
+# warnings and `check` alike -- and cmd_lease walked the same list, so a lock
+# directory could be leased out and handed to an agent AS ITS CONFIG DIR.
+mkdir -p "$P/slot-1.lock" "$P/slot-99.lock" "$P/slot-notanumber"
+_cnt=$(sh "$SLOTS" counts "$ID")
+[ "$_cnt" = "2 0 0" ] ||
+  fail "a <slot>.lock sibling was counted as a slot: $_cnt"
+sh "$SLOTS" check "$ID" "$B" 2>/dev/null | grep -q '2 slots' ||
+  fail "check counted a lock dir as a slot"
+# ...and it is never handed out. Every real slot is leased first, so a lease
+# that returns a .lock path (or anything but a slot or the base) is the bug.
+hl1=$(holder); hl2=$(holder); hl3=$(holder); sleep 0.2
+for _h in "$hl1" "$hl2" "$hl3"; do
+  _got=$(sh "$SLOTS" lease "$ID" "$B" "$_h" 2>/dev/null)
+  case $_got in
+    "$P"/slot-[0-9]|"$P"/slot-[0-9][0-9]|"$B") ;;
+    *) fail "lease handed out something that is not a slot: $_got" ;;
+  esac
+done
+kill "$hl1" "$hl2" "$hl3" 2>/dev/null || true; wait 2>/dev/null || true
+for _s in "$P"/slot-*.lock; do
+  [ -e "$_s/.lease" ] && fail "a lock dir was leased: $_s"
+done
+rm -rf "$P/slot-1.lock" "$P/slot-99.lock" "$P/slot-notanumber" \
+       "$P"/slot-*/.lease
+
 # --- leasing / overflow / dead-holder reclaim ---------------------------------
 h1=$(holder); h2=$(holder); sleep 0.2
 a=$(sh "$SLOTS" lease "$ID" "$B" "$h1")
@@ -65,6 +95,73 @@ h3=$(holder); sleep 0.2
 r=$(sh "$SLOTS" lease "$ID" "$B" "$h3")
 [ "$r" = "$b" ] || fail "dead-holder slot not reclaimed"
 kill "$h1" "$h3" 2>/dev/null; wait 2>/dev/null || true
+
+# --- which slot wins: a reclaimable WARM one beats a free COLD one -----------
+# The scan takes the first slot that is free OR reclaimable, in order, and
+# that ordering is the policy rather than an accident. Skipping ahead to an
+# untouched slot instead of recycling an earlier one that already holds a
+# login costs the user a sign-in for nothing -- and a pool would drift toward
+# every slot being warm, which is the opposite of paying only for the
+# concurrency you use.
+PR=$T/pref; mkdir -p "$PR"
+VALET_KEY_POOL_ROOT=$PR sh "$SLOTS" provision "$ID" "$B" 3 >/dev/null
+printf '{"claudeAiOauth":{"refreshToken":"r"}}\n' \
+  > "$PR/$ID/slot-1/.credentials.json"          # slot-1 warm...
+mkdir -p "$PR/$ID/slot-1/.lease"
+echo 999999 > "$PR/$ID/slot-1/.lease/pid"       # ...but its holder is dead
+hp1=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$PR sh "$SLOTS" lease "$ID" "$B" "$hp1" 2>/dev/null)
+[ "$got" = "$PR/$ID/slot-1" ] ||
+  fail "lease skipped a warm reclaimable slot for a cold one: $got"
+kill "$hp1" 2>/dev/null || true; wait "$hp1" 2>/dev/null || true
+
+# --- concurrent reclaim: two leasers must never get the same slot ------------
+# The state that triggers it is ordinary, not exotic: every slot held by a pid
+# that died (a reboot, a killed terminal), and several sessions starting at
+# once. Reclaiming used to be `rm -rf` then `mkdir`, which two leasers could
+# interleave so that the second DELETED THE FIRST'S LIVE LOCK and both walked
+# away holding the same slot -- one credentials file, two live sessions, which
+# is the exact token race the pool exists to remove.
+#
+# Repeated rounds because a race that reproduces sometimes is still a race: on
+# the pre-fix code this fired within a dozen rounds.
+# Each leaser must present its OWN live holder whose cmdline matches
+# $VALET_KEY_PROC_MATCH. Passing a pid that does not match would make every
+# lease look reclaimable to everyone -- correct behaviour, but it would hide
+# the race this is here to catch behind an expected duplicate.
+CP=$T/conc; mkdir -p "$CP" "$T/cout"
+VALET_KEY_POOL_ROOT=$CP sh "$SLOTS" provision "$ID" "$B" 3 >/dev/null
+_round=0
+while [ "$_round" -lt 12 ]; do
+  _round=$((_round + 1))
+  rm -f "$T/cout"/* "$T/holders"
+  for _s in "$CP/$ID"/slot-*; do          # every holder recorded but DEAD
+    rm -rf "$_s/.lease" "$_s"/.lease.dead.*
+    mkdir -p "$_s/.lease"; echo 999999 > "$_s/.lease/pid"
+  done
+  _i=0
+  while [ "$_i" -lt 3 ]; do               # 3 leasers, 3 slots: all reclaimed
+    _i=$((_i + 1))
+    _h=$(holder); echo "$_h" >> "$T/holders"
+    VALET_KEY_POOL_ROOT=$CP sh "$SLOTS" lease "$ID" "$B" "$_h" \
+      > "$T/cout/$_i" 2>/dev/null &
+  done
+  wait
+  while read -r _h; do kill "$_h" 2>/dev/null || true; done < "$T/holders"
+  _dupe=$(cat "$T/cout"/* | grep 'slot-' | sort | uniq -d)
+  [ -z "$_dupe" ] ||
+    fail "round $_round: two leasers were handed the same slot: $_dupe"
+  # Every leaser must get a real slot: with as many dead-held slots as
+  # leasers, falling back to the shared base would mean a reclaim was lost.
+  _got=$(cat "$T/cout"/* | grep -c 'slot-')
+  [ "$_got" = 3 ] || fail "round $_round: only $_got of 3 leasers got a slot"
+done
+# ...and the reclaim leaves nothing behind that a later run has to reason about.
+for _s in "$CP/$ID"/slot-*; do
+  for _l in "$_s"/.lease.dead.*; do
+    [ -e "$_l" ] && fail "reclaim left a stray lock dir: $_l"
+  done
+done
 
 rm "$P/slot-2/settings.json"
 echo '{}' > "$P/slot-2/settings.json"            # a real file over a link
@@ -136,5 +233,121 @@ printf '%s\n' "$out" | grep -q 'slot-2' && fail "far slot wrongly listed"
 printf '%s\n' "$out" | grep -q 'slot-3' && fail "cold slot listed"
 [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ] \
   || fail "expected exactly one near-cap line"
+
+# --- login-stale: re-login exactly the slots `stale` would have listed -------
+# The write half of the same question. It must pick the same slots -- a
+# re-login flow that missed one would leave a session to discover the cap the
+# hard way, and one that took them all would burn a login on a fresh slot.
+LS() { VALET_KEY_POOL_ROOT=$SP sh "$SLOTS" "$@" "$ID" "$AB"; }
+rm -f "$T/warmed"
+out=$(LS login-stale 2>&1)
+[ "$(cat "$T/warmed" 2>/dev/null)" = "$SP/$ID/slot-1" ] \
+  || fail "login-stale did not re-login the near-cap slot"
+printf '%s' "$out" | grep -q 'slot-1' || fail "login-stale did not name it"
+printf '%s' "$out" | grep -q 'slot-2' && fail "login-stale touched a far slot"
+
+# With nothing near the cap it is a clean no-op that SAYS so, rather than
+# printing nothing and leaving the caller unsure it ran.
+creds "$SP/$ID/slot-1" $(( now_ms + 30 * 86400000 ))
+rm -f "$T/warmed"
+out=$(LS login-stale 2>&1)
+printf '%s' "$out" | grep -qi "none within" \
+  || fail "login-stale was a silent no-op on a fresh pool"
+[ -f "$T/warmed" ] && fail "login-stale logged in with nothing near the cap"
+
+# --- provision CONVERGES on N, rather than only ever growing ----------------
+# It used to just create 1..N, so asking for 2 over a pool of 5 left 5 -- and
+# check called that healthy, because nothing had recorded what was asked for.
+# Asserted 2, actual 5, green marker.
+CV=$T/conv; CB=$T/convbase; mkdir -p "$CB"; printf '{}\n' > "$CB/.claude.json"
+PV() {   # <verb> [trailing args] -- id and base go in the middle
+  _v=$1; shift
+  VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" "$_v" "$ID" "$CB" "$@"
+}
+nslots() { ls -d "$CV/$ID"/slot-* 2>/dev/null | grep -c . || true; }
+
+PV provision 5 >/dev/null
+[ "$(nslots)" = 5 ] || fail "provision 5 did not make 5 slots"
+PV provision 2 >/dev/null
+[ "$(nslots)" = 2 ] || fail "provision 2 over 5 left $(nslots) slots, want 2"
+VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 \
+  || fail "check failed on a converged pool"
+
+# Growing again is the same operation in the other direction.
+PV provision 4 >/dev/null
+[ "$(nslots)" = 4 ] || fail "provision could not grow the pool back"
+
+# A WARM surplus slot is NOT discarded. It holds a login someone sat through a
+# browser flow for; throwing that away to satisfy an arithmetic target is not
+# a trade this should make on its own. It is kept, said out loud, and the
+# resulting gap shows up as drift rather than being quietly normalised.
+printf '{"claudeAiOauth":{"refreshToken":"r"}}\n' \
+  > "$CV/$ID/slot-4/.credentials.json"
+out=$(PV provision 2 2>&1)
+[ -s "$CV/$ID/slot-4/.credentials.json" ] ||
+  fail "provision discarded a warm slot's login to hit the target"
+printf '%s' "$out" | grep -qi 'warm' || fail "the kept warm slot was not named"
+rc=0
+VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "check called a pool of 3 healthy after 2 was requested"
+out=$(VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" 2>&1 || true)
+printf '%s' "$out" | grep -q 'size drift' || fail "size drift was not named"
+rm -f "$CV/$ID/slot-4/.credentials.json"
+
+# A LEASED surplus slot is never removed either: a live session is using it.
+h=$(holder); sleep 0.2
+PV provision 4 >/dev/null
+VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" lease "$ID" "$CB" "$h" >/dev/null
+out=$(PV provision 1 2>&1)
+[ -d "$CV/$ID/slot-1" ] || fail "provision removed a leased slot"
+kill "$h" 2>/dev/null || true; wait "$h" 2>/dev/null || true
+
+# A pool made before sizes were recorded has no declared value, so there is
+# nothing to compare against and nothing to report. Inventing one would
+# manufacture drift instead of detecting it.
+rm -f "$CV/$ID/.size"
+VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 \
+  || fail "a pool with no recorded size was reported as drifted"
+
+# --- stale is filtered by agent, because the policy is per-agent ------------
+# Which file holds the credential, and the pattern that reads a cap out of it,
+# come from the adapter. An unfiltered scan can only be right for one agent at
+# a time: run it with another agent's policy in the environment and every
+# capped slot reports "cap unknown" -- a silent no-op in the one feature whose
+# whole job is to speak up before a slot goes cold.
+creds "$SP/$ID/slot-1" $(( now_ms + 3 * 86400000 ))    # near cap again
+out=$(VALET_KEY_POOL_ROOT=$SP sh "$SLOTS" stale claude)
+printf '%s\n' "$out" | grep -q "^$ID/slot-1 " ||
+  fail "an agent-filtered stale scan missed its own pool"
+mkdir -p "$SP/otheragent/personal/slot-1"
+creds "$SP/otheragent/personal/slot-1" $(( now_ms + 1 * 86400000 ))
+out=$(VALET_KEY_POOL_ROOT=$SP sh "$SLOTS" stale claude)
+printf '%s\n' "$out" | grep -q otheragent &&
+  fail "a filtered scan reported another agent's pool"
+rm -rf "$SP/otheragent"
+
+# --- the argument contract --------------------------------------------------
+# These verbs are reached both from the engine and by hand (`valet-key slots
+# ...`), so bad input has to stop rather than improvise a path under $HOME.
+rc=0; sh "$SLOTS" provision "$ID" "$AB" notanumber >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "provision accepted a non-numeric slot count (rc=$rc)"
+rc=0; sh "$SLOTS" provision "$ID" "$T/no-such-base" 1 >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "provision accepted a missing base dir (rc=$rc)"
+rc=0
+VALET_KEY_POOL_ROOT=$T/nowhere sh "$SLOTS" check "$ID" "$AB" >/dev/null 2>&1 \
+  || rc=$?
+[ "$rc" = 1 ] || fail "check on an absent pool did not fail (rc=$rc)"
+
+# An unknown verb exits 2, distinct from the 1 a real failure uses: a typo in
+# a caller is not the same event as a pool that is broken.
+rc=0; sh "$SLOTS" nosuchverb >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "an unknown slots verb exited $rc, want 2"
+rc=0; sh "$SLOTS" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "slots with no verb exited $rc, want 2"
+
+# counts on a pool that is not there answers in the machine-readable shape
+# anyway, so a caller parsing it cannot be handed an empty string.
+out=$(sh "$SLOTS" counts nosuch/pool 2>/dev/null || true)
+[ "$out" = "0 0 0" ] || fail "counts on a missing pool printed '$out'"
 
 pass
