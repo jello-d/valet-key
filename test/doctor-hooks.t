@@ -1,10 +1,11 @@
 #!/bin/sh
-# doctor-context.t - doctor's check on the OPTIONAL context hook.
+# doctor-hooks.t - doctor's check on the OPTIONAL hook seams.
 #
-# valet-key owns this question because it declared the seam, and because both
-# of the seam's failure modes are SILENT BY DESIGN: resolve reads a non-zero
-# exit as "I cannot tell" and quietly falls back to the directory rule, while
-# guard reads exit 2 as "warn, then proceed". So a hook broken by its provider
+# valet-key owns this question because it declared the seams, and because
+# every one of their failure modes is SILENT BY DESIGN: selection reads a
+# non-zero exit as "I cannot tell" and quietly falls back to the directory
+# rule, veto reads exit 2 as "warn, then proceed", and a file without the
+# executable bit is skipped without a word. So a hook broken by its provider
 # renaming a verb keeps "working" -- nothing errors -- while whatever it was
 # enforcing has stopped. That is not hypothetical; it happened.
 #
@@ -20,15 +21,20 @@ mkdir -p "$T/cfg/hooks/profile.d" "$T/cfg/hooks/guard.d"
 PD=$T/cfg/hooks/profile.d
 GD=$T/cfg/hooks/guard.d
 
+# doctor's hooks section only. Everything is pointed into the scratch dir --
+# doctor is read-only, but a test whose output depends on the box's real pool
+# and real ~/.claude is a test that reports on the wrong machine.
 doc() {
-  VALET_KEY_CONFIG="$T/cfg" NO_COLOR=1 \
+  env -i PATH="$PATH" HOME="$T/home" NO_COLOR=1 \
+    VALET_KEY_CONFIG="$T/cfg" VALET_KEY_POOL_ROOT="$T/pool" \
+    VALET_KEY_SHIMS_DIR="$T/shims" \
     sh "$VK" doctor 2>&1 | sed -n '/^hooks/,/^$/p'
 }
 mkhook() { printf '%s\n' "$2" > "$1"; chmod +x "$1"; }
 
 # Drives the real resolve seam, to check an example in the LAUNCH path rather
 # than only through doctor's inspection of it.
-_fns=$(sed -n '/^valid_profile() {/,/^}/p;/^_hooks_in() {/,/^}/p;
+_fns=$(sed -n '/^valid_profile() {/,/^}/p;
                /^here_dir() {/,/^}/p;/^resolve_profile() {/,/^}/p' "$VK")
 drive_resolve() {
   ( cd "$T" && env VALET_KEY_CONFIG="$T/cfg" sh -c "
@@ -89,6 +95,42 @@ case $(doc) in
   *"unusable profile"*) ;;
   *) fail "an unusable profile name was not flagged: $(doc)" ;;
 esac
+
+# --- a hook nobody remembered to chmod +x ----------------------------------
+# The most reachable version of this seam's worst state: the file is there,
+# it is correct, and it has never once run. Both seams skip a file without the
+# executable bit -- and without this check doctor would report "no hooks" over
+# the top of a guard someone installed to refuse things.
+mkhook "$PD/50-sel" '#!/bin/sh
+echo personal'
+printf '#!/bin/sh\nexit 1\n' > "$GD/60-forgot"      # deliberately not +x
+case $(doc) in
+  *"[FAIL]"*"60-forgot is not executable"*) ;;
+  *) fail "a non-executable hook was silently ignored: $(doc)" ;;
+esac
+case $(doc) in
+  *"chmod +x"*) ;;
+  *) fail "the non-executable hook came with no fix: $(doc)" ;;
+esac
+chmod +x "$GD/60-forgot"
+case $(doc) in
+  *"[FAIL]"*) fail "chmod +x did not clear the finding: $(doc)" ;;
+esac
+rm -f "$GD/60-forgot"
+
+# ...and it is reported even when it is the ONLY thing in the hooks dirs,
+# which is the case where "no hooks" would otherwise be printed.
+rm -f "$PD"/* "$GD"/*
+printf '#!/bin/sh\nexit 1\n' > "$PD/50-forgot"
+out=$(doc)
+case $out in
+  *"50-forgot is not executable"*) ;;
+  *) fail "a lone non-executable hook was not reported: $out" ;;
+esac
+case $out in
+  *"no hooks"*) fail "a present-but-unreadable hook was reported as none" ;;
+esac
+rm -f "$PD"/*
 
 # --- a file at the RETIRED single-hook path is reported --------------------
 # Silently ignoring it would leave someone believing a boundary is enforced

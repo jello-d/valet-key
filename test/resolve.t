@@ -29,7 +29,7 @@ mkdir -p "$T/cfg/hooks/profile.d" "$T/cfg/hooks/guard.d"
 PD=$T/cfg/hooks/profile.d
 GD=$T/cfg/hooks/guard.d
 
-fns=$(sed -n '/^valid_profile() {/,/^}/p;/^_hooks_in() {/,/^}/p;
+fns=$(sed -n '/^valid_profile() {/,/^}/p;
               /^here_dir() {/,/^}/p;/^resolve_profile() {/,/^}/p;
               /^guard_check() {/,/^}/p' "$VK")
 [ -n "$fns" ] || fail "could not extract the seams from bin/valet-key"
@@ -88,6 +88,92 @@ exit 1'
 [ "$(resolve)" = matched ] ||
   fail "all-abstain did not fall through to the cwd rule: $(resolve)"
 rm -f "$T/cfg/profiles" "$PD"/*
+
+# --- the cwd table: a REPO resolves the same way from anywhere inside it ----
+# The context is the git root, not $PWD. That is the difference between a
+# rule that works and one that surprises: a session started in a repo's
+# deeply-nested subdirectory is the same piece of work as one started at its
+# top, and must reach the same account.
+if command -v git >/dev/null 2>&1; then
+  mkdir -p "$T/tree/repo/src/deep"
+  ( cd "$T/tree/repo" && git init -q . ) || fail "could not make a test repo"
+  printf 'byroot %s/tree\n' "$T" > "$T/cfg/profiles"
+  deep() {   # resolve with the cwd set to <dir>
+    ( cd "$1" && env VALET_KEY_CONFIG="$T/cfg" sh -c "
+        set -eu
+        DEFAULT_PROFILE=personal
+        VALET_KEY_CONFIG=\$VALET_KEY_CONFIG
+        VALET_KEY_HOOKS=\$VALET_KEY_CONFIG/hooks
+        $fns
+        resolve_profile" ) 2>/dev/null
+  }
+  [ "$(deep "$T/tree/repo")" = byroot ] || fail "a repo root did not match"
+  [ "$(deep "$T/tree/repo/src/deep")" = byroot ] ||
+    fail "a subdirectory of a matched repo resolved differently from its root"
+
+  # A sibling path sharing a prefix is NOT inside the tree: the comparison is
+  # on path components, not on strings.
+  mkdir -p "$T/tree-other/repo"
+  ( cd "$T/tree-other/repo" && git init -q . ) || fail "second repo failed"
+  got=$(deep "$T/tree-other/repo")
+  [ "$got" = personal ] ||
+    fail "a sibling path sharing a prefix was matched: $got"
+
+  # The case that proves it is the GIT ROOT and not merely $PWD. A rule
+  # pointing INSIDE a repo does not match, because the repo is one piece of
+  # work with one account -- resolving it by cwd would give the same session
+  # two different logins depending on which subdirectory it started in.
+  printf 'byroot %s/tree/repo/src\n' "$T" > "$T/cfg/profiles"
+  got=$(deep "$T/tree/repo/src/deep")
+  [ "$got" = personal ] ||
+    fail "a rule pointing inside a repo matched by cwd (got '$got')"
+
+  # ...and outside a repo there is no root, so $PWD is the context and the
+  # same rule does match. Without that fallback the table would only work in
+  # repositories.
+  mkdir -p "$T/plain/src/deep"
+  printf 'bycwd %s/plain/src\n' "$T" > "$T/cfg/profiles"
+  got=$(deep "$T/plain/src/deep")
+  [ "$got" = bycwd ] ||
+    fail "outside a repo the cwd was not the context (got '$got')"
+  rm -f "$T/cfg/profiles"
+fi
+
+# --- a hook path containing a SPACE is still a hook -------------------------
+# This used to be a silent loss. The hook list was captured and word-split, so
+# "10 my hook" became three nonexistent paths, each of which "failed" -- and a
+# failure is a legitimate answer on both seams. Selection read it as "I cannot
+# tell" and moved on; a guard would have been read as a refusal it never made.
+# Either way the hook was gone and nothing said so. A space in $HOME is
+# ordinary on some systems, so the path here is not exotic.
+mkhook "$PD/50-spaced name" '#!/bin/sh
+echo spaced'
+[ "$(resolve)" = spaced ] ||
+  fail "a hook whose path holds a space was skipped: $(resolve)"
+rm -f "$PD"/*
+
+mkhook "$GD/50-spaced name" '#!/bin/sh
+exit 1'
+[ "$(guard_rc)" = 1 ] ||
+  fail "a guard whose path holds a space did not refuse"
+rm -f "$GD"/*
+
+# --- the cwd table is validated too, not just hook output -------------------
+# The name becomes a directory component and half a pool id whichever input it
+# arrived on. Validating only the hook would leave the guard looking present
+# while the other door stood open -- and a table is hand-edited, which makes a
+# stray `../` at least as likely there.
+# (A name with a space is not testable here and does not need to be: the table
+# is whitespace-delimited, so such a name cannot be written in it.)
+for bad in '../../escaped' 'UPPER' 'under_score' '-lead'; do
+  printf '%s %s\n' "$bad" "$T" > "$T/cfg/profiles"
+  out=$(resolve_rc) && fail "profiles table accepted '$bad'"
+  case $out in
+    *"invalid profile"*) ;;
+    *) fail "an invalid table profile did not say why: '$out'" ;;
+  esac
+done
+rm -f "$T/cfg/profiles"
 
 # --- selection: an unusable name is an ERROR, never a silent default -------
 # The name becomes a directory component, so a hook returning a path fragment

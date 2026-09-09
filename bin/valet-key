@@ -13,6 +13,7 @@
 #   valet-key login [warm|check|force|stale] [agent] [profile]    logins
 #   valet-key stale              all pools: warm slots near their cap
 #   valet-key check [agent [profile]]    audit a pool, or the whole setup
+#   valet-key resolve [agent]    dry run: which profile/pool applies HERE
 #   valet-key doctor             environment health (PATH, creds, saturation)
 #   valet-key slots <verb> ...   raw slot-pool escape hatch
 #
@@ -36,13 +37,14 @@
 #   $VALET_KEY_CONFIG/profiles  -> "<profile> <matchdir>" cwd-resolver lines
 #                                  (consulted only when every hook abstains)
 #
-# POSIX sh (dash). Non-privileged. tackup fills the seams; standalone it just
-# works with one profile.
+# POSIX sh (dash). Non-privileged. An integrator fills the seams; standalone it
+# just works, with one profile and no refusals. See man valet-key.
 set -eu
 
-# --- self-location: our libexec + share, from this script's real path --------
+# --- self-location: our libexec, from this script's real path ----------------
 # $0 may be a bare name (PATH lookup), relative, or absolute, and reaches us
-# through the shim symlink; resolve it. bin/ libexec/ share/ are siblings.
+# through the shim symlink; resolve it. bin/ and libexec/ are siblings. (share/
+# is templates and examples for a human; nothing here reads it.)
 _argv0=${0##*/}                    # the name we were INVOKED as (the shim key)
 _self=$0
 case $_self in
@@ -174,12 +176,21 @@ valid_profile() {   # <name>
 # answering both questions could never do.
 VALET_KEY_HOOKS=${VALET_KEY_HOOKS:-$VALET_KEY_CONFIG/hooks}
 
-_hooks_in() {   # <dir> -- executable hooks, name-ordered
-  [ -d "$VALET_KEY_HOOKS/$1" ] || return 0
-  for _hk in "$VALET_KEY_HOOKS/$1"/*; do
-    [ -f "$_hk" ] && [ -x "$_hk" ] && printf '%s\n' "$_hk"
-  done
-}
+# Hooks are iterated by GLOBBING IN PLACE, never by capturing a list and
+# splitting it. `for h in $(list_them)` word-splits, so a hook whose path holds
+# a space becomes several nonexistent paths, each "fails" -- and both seams
+# read a failure as a legitimate answer. Selection would take it as "I cannot
+# tell" and move on; a veto that could not run counts as a refusal it never
+# made. Either way the hook is gone and nothing says so, which is the failure
+# this whole seam is built to avoid. A space in $HOME is ordinary on some
+# systems, so this is not a hypothetical path.
+#
+#   for _hk in "$VALET_KEY_HOOKS/<dir>"/*; do
+#     [ -f "$_hk" ] && [ -x "$_hk" ] || continue
+#
+# A non-executable file is skipped here (it cannot be run); `doctor` reports
+# one, because silently skipping it is how a hook comes to look installed
+# while never having run.
 
 here_dir() {
   _r=$(git rev-parse --show-toplevel 2>/dev/null || true)
@@ -201,7 +212,8 @@ here_dir() {
 # becomes indistinguishable from one deliberately saying "baseline", so a
 # failed integration silently re-enables guessing instead of surfacing.
 resolve_profile() {
-  for _hk in $(_hooks_in profile.d); do
+  for _hk in "$VALET_KEY_HOOKS/profile.d"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] || continue
     _p=$(VALET_KEY_AGENT="${AGENT:-}" "$_hk" 2>/dev/null) || continue
     # First line, with surrounding whitespace trimmed. Deliberately NOT a
     # blanket space-strip: that would silently weld "has space" into a
@@ -225,9 +237,26 @@ resolve_profile() {
       case "$_dir" in "~/"*) _dir=$HOME/${_dir#\~/} ;; '~') _dir=$HOME ;; esac
       _dir=$( ( cd "$_dir" 2>/dev/null && pwd -P ) || true )
       [ -n "$_dir" ] || continue
-      case "$_h/" in "$_dir"/*) printf '%s\n' "$_prof"; return 0 ;; esac
+      case "$_h/" in
+        "$_dir"/*)
+          # Validated on THIS path too, not just the hook one. The name is
+          # about to become a directory component and half a pool id, and a
+          # table is edited by hand -- which makes a stray `../` at least as
+          # likely here as from a hook. Skipping the check on one of the two
+          # inputs would leave the guard looking present while half the doors
+          # were open.
+          valid_profile "$_prof" || {
+            echo "valet-key: $VALET_KEY_CONFIG/profiles:" \
+                 "invalid profile name '$_prof'" >&2
+            exit 1; }
+          printf '%s\n' "$_prof"; return 0 ;;
+      esac
     done < "$VALET_KEY_CONFIG/profiles"
   fi
+  valid_profile "$DEFAULT_PROFILE" || {
+    echo "valet-key: invalid default profile '$DEFAULT_PROFILE'" \
+         "(\$VALET_KEY_DEFAULT_PROFILE)" >&2
+    exit 1; }
   printf '%s\n' "$DEFAULT_PROFILE"
 }
 
@@ -242,7 +271,8 @@ resolve_profile() {
 # (its stderr passes through).
 guard_check() {   # profile
   _worst=0
-  for _hk in $(_hooks_in guard.d); do
+  for _hk in "$VALET_KEY_HOOKS/guard.d"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] || continue
     _g=0
     VALET_KEY_AGENT="${AGENT:-}" VALET_KEY_PROFILE="$1" "$_hk" "$1" || _g=$?
     case $_g in
@@ -286,11 +316,33 @@ run_agent() {
 }
 
 # --- management --------------------------------------------------------------
-# provision/login resolve the pool (agent, profile) then hand id+base to slots,
-# also exporting the real binary for the interactive login verbs.
+# provision/login/check resolve the pool (agent, profile) then hand id+base to
+# slots, also exporting the real binary for the interactive login verbs.
+#
+# ONE RULE FOR "WHICH PROFILE". A profile named on the command line is used as
+# given; omitted, it is RESOLVED exactly as a launch here would resolve it.
+# These three used to disagree -- login resolved, provision and check fell back
+# to the default -- so `cd ~/work && valet-key provision claude` provisioned
+# PERSONAL while `valet-key login` one line later acted on WORK. Nothing said
+# so, and the pool you thought you had built was somewhere else. A tool whose
+# entire job is picking the right account cannot have two answers to where
+# "here" is.
+#
+# Because the answer now depends on context, every one of them PRINTS the pool
+# it settled on. Resolution that is silent is resolution you cannot check.
+resolve_pool() {   # <profile-or-empty> -- echo the profile, validated
+  if [ -n "${1:-}" ]; then
+    valid_profile "$1" || die "invalid profile name '$1'"
+    printf '%s\n' "$1"
+  else
+    resolve_profile
+  fi
+}
+
 m_provision() {
   load_adapter "${1:?agent required}"
-  _prof=${2:-$DEFAULT_PROFILE}; _n=${3:-5}
+  _prof=$(resolve_pool "${2:-}"); _n=${3:-5}
+  echo "valet-key: provisioning $(pool_id "$_prof")"
   "$SLOTS" provision "$(pool_id "$_prof")" "$(profile_dir "$_prof")" "$_n"
 }
 # valet-key login [warm|check|force|stale] [agent] [profile]
@@ -300,10 +352,11 @@ m_login() {
   _act=warm
   case "${1:-}" in warm|check|force|stale) _act=$1; shift || true ;; esac
   load_adapter "${1:-claude}"
-  _prof=${2:-$(resolve_profile)}
+  _prof=$(resolve_pool "${2:-}")
   VALET_KEY_AGENT_BIN=$(adapter_realbin) || die "$AGENT: real binary not found"
   export VALET_KEY_AGENT_BIN
   _id=$(pool_id "$_prof"); _base=$(profile_dir "$_prof")
+  echo "valet-key: login $_act on $_id"
   case $_act in
     warm)  "$SLOTS" warm        "$_id" "$_base" ;;
     check) "$SLOTS" login-check  "$_id" "$_base" ;;
@@ -311,13 +364,139 @@ m_login() {
     stale) "$SLOTS" login-stale  "$_id" "$_base" ;;
   esac
 }
+# resolve: what WOULD happen here, without launching anything.
+#
+# The tool's entire job is choosing an account, and until this existed the only
+# way to find out which one it had chosen was to LAUNCH THE AGENT and read the
+# announce line off its stderr -- that is, to run the thing you were trying to
+# check first. Worse, when routing surprised you there was no way to see why.
+#
+# So this shows the working, not just the answer: which hook answered, which
+# ones were never asked because an earlier one did, what the guards say, and
+# whether the pool is actually there. Exits 1 if a guard would refuse, so
+# `valet-key resolve && ...` means what it looks like it means.
+m_resolve() {
+  load_adapter "${1:-claude}"
+  _prof=$(resolve_profile)
+  _base=$(profile_dir "$_prof")
+  echo "valet-key resolve"
+  echo
+  printf '  agent    %s\n' "$AGENT"
+  printf '  context  %s\n' "$(here_dir)"
+  printf '  profile  %s\n' "$_prof"
+  printf '  config   %s\n' "$_base"
+  if [ "${ADAPTER_SLOTS:-0}" = 1 ]; then
+    _c=$("$SLOTS" counts "$(pool_id "$_prof")" 2>/dev/null || echo "0 0 0")
+    _t=${_c%% *}; _r=${_c#* }; _cw=${_r%% *}; _l=${_r##* }
+    if [ "$_t" -gt 0 ]; then
+      printf '  pool     %s -- %s slots, %s warm, %s leased\n' \
+        "$(pool_id "$_prof")" "$_t" "$_cw" "$_l"
+    else
+      printf '  pool     %s -- NONE (this session would share the base dir)\n' \
+        "$(pool_id "$_prof")"
+    fi
+  else
+    printf '  pool     none (this agent is poolless by design)\n'
+  fi
+
+  echo; echo "selection (first hook to ANSWER wins; then the cwd table)"
+  _seen=0; _any=0
+  for _hk in "$VALET_KEY_HOOKS/profile.d"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] || continue
+    _any=1
+    if [ "$_seen" = 1 ]; then
+      mk_note "profile.d/${_hk##*/} (not consulted; an earlier hook answered)"
+      continue
+    fi
+    _rc=0; _o=$(VALET_KEY_AGENT="$AGENT" "$_hk" 2>/dev/null) || _rc=$?
+    _o=$(printf '%s' "$_o" | head -1 | tr -d '[:space:]')
+    if [ "$_rc" = 0 ]; then
+      _seen=1
+      mk_ok "profile.d/${_hk##*/} -> ${_o:-(empty: the default)}"
+    else
+      mk_note "profile.d/${_hk##*/} abstains (exit $_rc)"
+    fi
+  done
+  [ "$_any" = 1 ] || mk_note "no profile.d hooks"
+  if [ "$_seen" = 1 ]; then
+    mk_note "$VALET_KEY_CONFIG/profiles (not consulted; a hook answered)"
+  elif [ -r "$VALET_KEY_CONFIG/profiles" ]; then
+    mk_ok "$VALET_KEY_CONFIG/profiles -> $_prof"
+  else
+    mk_note "no profiles table; the default profile applies"
+  fi
+
+  echo; echo "guards (EVERY one runs; any refusal wins)"
+  _worst=0; _any=0
+  for _hk in "$VALET_KEY_HOOKS/guard.d"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] || continue
+    _any=1; _g=0
+    _msg=$(VALET_KEY_AGENT="$AGENT" VALET_KEY_PROFILE="$_prof" \
+      "$_hk" "$_prof" 2>&1 >/dev/null) || _g=$?
+    case $_g in
+      0) mk_ok "guard.d/${_hk##*/} allows" ;;
+      2) mk_warn "guard.d/${_hk##*/} warns${_msg:+: $_msg}"
+         [ "$_worst" = 0 ] && _worst=2 ;;
+      *) mk_bad "guard.d/${_hk##*/} REFUSES${_msg:+: $_msg}"; _worst=1 ;;
+    esac
+  done
+  [ "$_any" = 1 ] || mk_note "no guard.d hooks; nothing refuses"
+
+  echo
+  case $_worst in
+    1) echo "valet-key: this launch would be REFUSED."; return 1 ;;
+    2) echo "valet-key: this launch would proceed, with a warning." ;;
+    *) echo "valet-key: this launch would proceed." ;;
+  esac
+  return 0
+}
+
 # check: one pool with an agent arg; with NO args, the whole provisioned setup
 # (every pool). The declarative DRIFT audit -- what provisioning owns and can
 # re-fix. Non-zero on any missing pool or structural drift.
 m_check() {
   [ $# -gt 0 ] || { check_all; return; }
-  load_adapter "${1:?agent required}"; _prof=${2:-$DEFAULT_PROFILE}
+  load_adapter "${1:?agent required}"; _prof=$(resolve_pool "${2:-}")
   _check_pool "$(pool_id "$_prof")" "$(profile_dir "$_prof")"
+}
+
+# stale, across every pool, with the RIGHT adapter loaded for each. The scan
+# reads a per-agent credential file with a per-agent pattern, so doing it in
+# one pass with whatever adapter happened to be loaded last reports "cap
+# unknown" for every other agent -- a silent no-op in the one feature whose
+# entire job is to speak up before a slot goes cold.
+m_stale() {
+  for _ag in $(list_agents); do
+    [ -r "$LIBEXEC/adapters/$_ag" ] || continue
+    load_adapter "$_ag"
+    [ "${ADAPTER_SLOTS:-0}" = 1 ] || continue
+    "$SLOTS" stale "$_ag" || true
+  done
+}
+
+# Every profile name valet-key could route to on this box: the default, plus
+# whatever the two config tables name. Deliberately NOT "profiles that have
+# pools" -- the entire point of the caller is to find the ones that do not.
+#
+# A profile can also arrive from a profile.d hook, and those cannot be
+# enumerated: a hook is a program, and asking it what it MIGHT answer is not a
+# question it has an interface for. So this covers the declarative sources,
+# which is where a profile someone forgot to provision realistically comes
+# from.
+known_profiles() {
+  printf '%s\n' "$DEFAULT_PROFILE"
+  if [ -r "$VALET_KEY_CONFIG/profiles" ]; then
+    while read -r _kp _krest; do
+      case "$_kp" in ''|'#'*) continue ;; esac
+      if valid_profile "$_kp"; then printf '%s\n' "$_kp"; fi
+    done < "$VALET_KEY_CONFIG/profiles"
+  fi
+  if [ -r "$VALET_KEY_CONFIG/dirs" ]; then
+    while read -r _ka _kp _krest; do
+      case "$_ka" in ''|'#'*) continue ;; esac
+      if valid_profile "${_kp:-}"; then printf '%s\n' "$_kp"; fi
+    done < "$VALET_KEY_CONFIG/dirs"
+  fi
 }
 
 # Every installed agent (one adapter file == one agent valet-key knows).
@@ -387,7 +566,26 @@ _doctor_hooks() {
   fi
 
   _any=0
-  for _hk in $(_hooks_in profile.d); do
+
+  # A file sitting in a hooks dir WITHOUT the executable bit is invisible:
+  # the glob above tests -x, so selection never runs it, guard never does
+  # every check below would report "no hooks" while the file sits there
+  # looking installed. It is the same failure as the retired path above --
+  # someone believes a boundary is enforced and nothing is reading it -- and
+  # the likeliest way to reach it, since dropping in a hook and forgetting
+  # the chmod is one missed step, not a rename.
+  for _d in profile.d guard.d; do
+    [ -d "$VALET_KEY_HOOKS/$_d" ] || continue
+    for _hk in "$VALET_KEY_HOOKS/$_d"/*; do
+      [ -f "$_hk" ] && [ ! -x "$_hk" ] || continue
+      _any=1
+      _dfail "$_d/${_hk##*/} is not executable, so nothing runs it"
+      _dfix "chmod +x $_hk"
+    done
+  done
+
+  for _hk in "$VALET_KEY_HOOKS/profile.d"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] || continue
     _any=1
     _err=$(VALET_KEY_AGENT=doctor "$_hk" 2>&1 >/dev/null) || true
     _rc=0; VALET_KEY_AGENT=doctor "$_hk" >/dev/null 2>&1 || _rc=$?
@@ -407,7 +605,8 @@ _doctor_hooks() {
     fi
   done
 
-  for _hk in $(_hooks_in guard.d); do
+  for _hk in "$VALET_KEY_HOOKS/guard.d"/*; do
+    [ -f "$_hk" ] && [ -x "$_hk" ] || continue
     _any=1
     _rc=0
     VALET_KEY_AGENT=doctor VALET_KEY_PROFILE="$DEFAULT_PROFILE" \
@@ -428,8 +627,10 @@ _doctor_hooks() {
 # doctor: the ENVIRONMENTAL sweep -- the runtime health valet-key can neither
 # provision nor repair (PATH order, leaked API keys, pool saturation, slots near
 # their cap). Read-only, launches nothing; complements `check` (declarative
-# drift) as a readiness probe complements a provisioner. Exits non-zero only on
-# a real breakage (a shim that does not intercept); the rest are advisories.
+# drift) as a readiness probe complements a provisioner. Exits non-zero on a
+# real BREAKAGE -- a shim that does not intercept, or a hook that is not being
+# read or is answering outside its contract. Everything else (a leaked API key,
+# a saturated pool, a slot near its cap) is an advisory and does not.
 m_doctor() {
   _fail=0; _warn=0
   echo "valet-key doctor"
@@ -478,7 +679,31 @@ m_doctor() {
   done
   [ "$_any" = 1 ] || _dna "no pools provisioned"
 
-  _st=$("$SLOTS" stale 2>/dev/null || true)
+  # A profile you can actually reach, with NO pool behind it. This is the
+  # tool's central promise quietly unmet: with no pool, `lease` hands back the
+  # shared base dir, and it does so SILENTLY on the launch path -- so every
+  # session for that profile shares one credentials file exactly as it would
+  # if valet-key had never been installed. The logins start knocking each
+  # other out again and the tool that was supposed to stop that says nothing.
+  #
+  # Nothing else can catch it. `check` audits pools that EXIST, and this
+  # failure's whole shape is a pool that does not.
+  for _ag in $(list_agents); do
+    load_adapter "$_ag"
+    [ "${ADAPTER_SLOTS:-0}" = 1 ] || continue      # poolless agents: fine
+    for _pr in $(known_profiles | sort -u); do
+      _pdir=$(profile_dir "$_pr")
+      # Only where the account dir EXISTS. A profile named in a table but not
+      # yet logged into is an ordinary half-finished setup, not a fault, and
+      # warning about every agent x every profile would bury the real ones.
+      [ -d "$_pdir" ] || continue
+      "$SLOTS" counts "$_ag/$_pr" >/dev/null 2>&1 && continue
+      _dwarn "$_ag/$_pr has no pool; sessions share $_pdir"
+      _dfix "valet-key provision $_ag $_pr"
+    done
+  done
+
+  _st=$(m_stale 2>/dev/null || true)
   if [ -n "$_st" ]; then
     _oifs=$IFS; IFS='
 '
@@ -550,8 +775,9 @@ case "$_v" in
   provision)  m_provision "$@" ;;
   login)      m_login "$@" ;;
   check)      m_check "$@" ;;
+  resolve)    m_resolve "$@" ;;
   doctor)     m_doctor ;;
-  stale)      "$SLOTS" stale ;;
+  stale)      m_stale ;;
   slots)      "$SLOTS" "$@" ;;
   shim)       m_shim "$@" ;;
   unshim)     m_unshim "$@" ;;
@@ -559,7 +785,13 @@ case "$_v" in
   rehash)     m_rehash ;;
   init)       m_init ;;
   shims-dir)  printf '%s\n' "$VALET_KEY_SHIMS_DIR" ;;
+  # The usage text IS the header comment: one source of truth, so a verb
+  # cannot be added without the help growing a line. Where that comment ENDS
+  # is FOUND, not written down -- the range runs to `set -eu` and then keeps
+  # only the comment lines. A hardcoded last-line number is the same fact
+  # stored twice, and it drifts the moment anyone adds a line up there, which
+  # is exactly what happened when `resolve` was added.
   ''|help|-h|--help)
-    sed -n '2,35p' "$VALET_KEY_SELF" | sed 's/^# \{0,1\}//' ;;
+    sed -n '2,/^set -eu$/p' "$VALET_KEY_SELF" | sed -n 's/^# \{0,1\}//p' ;;
   *) die "unknown command '$_v' (try: valet-key help)" ;;
 esac
