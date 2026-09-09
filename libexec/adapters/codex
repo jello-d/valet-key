@@ -29,22 +29,14 @@ ADAPTER_UNSET_ENV=OPENAI_API_KEY
 # rather than misreport. The pool's lease/reclaim/warm still work fully.
 ADAPTER_EXP_PATTERN=
 
-# The REAL codex, skipping the valet-key shim ($VALET_KEY_SELF, the resolved
-# engine).
-# `npm i -g @openai/codex` lands it on PATH; else FOLLOW PATH in the user's
-# order. $CODEX_BIN overrides (odd install / test).
+# The REAL codex. `npm i -g @openai/codex` lands it on PATH; the npm-global
+# spot is tried first. $CODEX_BIN overrides (odd install / test).
+#
+# Both the override check and the skip-the-shim rule live in
+# libexec/adapter.sh, so every adapter gets them identically.
 adapter_realbin() {
-  [ -n "${CODEX_BIN:-}" ] && { printf '%s\n' "$CODEX_BIN"; return 0; }
-  for c in "$HOME/.npm-global/bin/codex" /usr/local/bin/codex; do
-    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$c"; return 0; }
-  done
-  IFS=:; for d in $PATH; do
-    [ -x "$d/codex" ] &&
-      [ "$(readlink -f "$d/codex")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$d/codex"; return 0; }
-  done
-  return 1
+  realbin_from codex "$HOME/.npm-global/bin/codex" \
+    /usr/local/bin/codex
 }
 
 # Codex errors if CODEX_HOME points at a MISSING dir (it canonicalises it), so

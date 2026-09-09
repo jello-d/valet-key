@@ -24,24 +24,14 @@ ADAPTER_UNSET_ENV=ANTHROPIC_API_KEY
 # the slots lib pulls it with this sed pattern to warn before a slot goes cold.
 ADAPTER_EXP_PATTERN='.*"refreshTokenExpiresAt":\([0-9][0-9]*\).*'
 
-# The REAL Claude Code binary. Mirrors the old tackup wrapper EXACTLY so
-# valet-key
-# resolves the identical binary: prefer the odd-install spots, else FOLLOW PATH
-# (respecting the user's order), always skipping the valet-key shim
-# ($VALET_KEY_SELF,
-# the resolved engine). $CLAUDE_BIN overrides (odd install / test).
+# The REAL Claude Code binary: the npm-global / local-install spots first,
+# then PATH in the user's order. $CLAUDE_BIN overrides (odd install / test).
+#
+# Both the override check and the skip-the-shim rule live in
+# libexec/adapter.sh, so every adapter gets them identically.
 adapter_realbin() {
-  [ -n "${CLAUDE_BIN:-}" ] && { printf '%s\n' "$CLAUDE_BIN"; return 0; }
-  for c in "$HOME/.npm-global/bin/claude" /usr/local/bin/claude; do
-    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$c"; return 0; }
-  done
-  IFS=:; for d in $PATH; do
-    [ -x "$d/claude" ] &&
-      [ "$(readlink -f "$d/claude")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$d/claude"; return 0; }
-  done
-  return 1
+  realbin_from claude "$HOME/.npm-global/bin/claude" \
+    /usr/local/bin/claude
 }
 
 # Launch-time environment. Claude via apt lags and nags about updates -- silence

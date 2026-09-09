@@ -27,22 +27,13 @@ ADAPTER_QUIET=1                    # gcloud is scripted; suppress the per-call
                                    # 'valet-key: ...' line (VALET_KEY_VERBOSE
                                    # overrides)
 
-# The REAL gcloud, skipping the valet-key shim ($VALET_KEY_SELF, the resolved
-# engine).
-# apt (google-cloud-cli) installs it at /usr/bin/gcloud; else FOLLOW PATH in the
-# user's order. $GCLOUD_BIN overrides (odd install / test).
+# The REAL gcloud. apt (google-cloud-cli) installs it at /usr/bin/gcloud.
+# $GCLOUD_BIN overrides (odd install / test).
+#
+# Both the override check and the skip-the-shim rule live in
+# libexec/adapter.sh, so every adapter gets them identically.
 adapter_realbin() {
-  [ -n "${GCLOUD_BIN:-}" ] && { printf '%s\n' "$GCLOUD_BIN"; return 0; }
-  for c in /usr/bin/gcloud /usr/local/bin/gcloud; do
-    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$c"; return 0; }
-  done
-  IFS=:; for d in $PATH; do
-    [ -x "$d/gcloud" ] &&
-      [ "$(readlink -f "$d/gcloud")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$d/gcloud"; return 0; }
-  done
-  return 1
+  realbin_from gcloud /usr/bin/gcloud /usr/local/bin/gcloud
 }
 
 # gcloud needs no launch-time env scrubbing (unlike claude's API-key unset).

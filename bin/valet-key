@@ -53,6 +53,9 @@ VALET_KEY_SELF=$(readlink -f -- "$_self" 2>/dev/null || echo "$_self")
 export VALET_KEY_SELF          # adapters skip this path finding the real binary
 LIBEXEC=${VALET_KEY_SELF%/*}/../libexec
 SLOTS="$LIBEXEC/slots"
+# Shared adapter helpers (realbin_from), sourced once before any adapter is.
+# Kept OUT of libexec/adapters/ on purpose: one file there is one agent.
+. "$LIBEXEC/adapter.sh"
 VALET_KEY_CONFIG=${VALET_KEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}\
 /valet-key}
 DEFAULT_PROFILE=${VALET_KEY_DEFAULT_PROFILE:-personal}

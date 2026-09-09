@@ -24,21 +24,14 @@ ADAPTER_UNSET_ENV='GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_USE_VERTEXAI
 GOOGLE_GEMINI_BASE_URL GOOGLE_APPLICATION_CREDENTIALS CLOUD_SHELL
 GEMINI_CLI_USE_COMPUTE_ADC'
 
-# The REAL gemini, skipping the valet-key shim ($VALET_KEY_SELF). npm installs
-# it on
-# PATH (nvm/npm-global); $GEMINI_BIN overrides (odd install / test).
+# The REAL gemini. npm installs it on PATH (nvm/npm-global); that spot is
+# tried first. $GEMINI_BIN overrides (odd install / test).
+#
+# Both the override check and the skip-the-shim rule live in
+# libexec/adapter.sh, so every adapter gets them identically.
 adapter_realbin() {
-  [ -n "${GEMINI_BIN:-}" ] && { printf '%s\n' "$GEMINI_BIN"; return 0; }
-  for c in "$HOME/.npm-global/bin/gemini" /usr/local/bin/gemini; do
-    [ -x "$c" ] && [ "$(readlink -f "$c")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$c"; return 0; }
-  done
-  IFS=:; for d in $PATH; do
-    [ -x "$d/gemini" ] &&
-      [ "$(readlink -f "$d/gemini")" != "$VALET_KEY_SELF" ] && {
-      printf '%s\n' "$d/gemini"; return 0; }
-  done
-  return 1
+  realbin_from gemini "$HOME/.npm-global/bin/gemini" \
+    /usr/local/bin/gemini
 }
 
 adapter_preexec() { :; }
