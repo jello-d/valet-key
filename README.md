@@ -38,10 +38,9 @@ way: an IDE plugin and a terminal are two sessions. So is a background job.
 > rotates. An API-key setup carries no such token to collide over.
 
 **valet-key gives each session its own credentials.** A small pool of login
-slots sits beside your real config and shares everything else (projects,
-settings, history), so the only thing a session owns privately is its login.
-Sessions stop clobbering each other. You log into a slot once and stay logged
-in.
+slots shares your real config back by symlink — the same projects, the same
+settings — while keeping the credentials file private per slot. Sessions stop
+clobbering each other. You log into a slot once and stay logged in.
 
 The same design turns a liability into a feature: because each session is
 isolated, you can **deliberately** run as many in parallel as you like
@@ -92,6 +91,12 @@ shims-dir-first-on-PATH ritual `pyenv`, `rbenv`, and `asdf` use. The shims
 directory is separate from `~/.local/bin`, so the shim shadows the real binary
 with no collision; valet-key finds the real one past itself.
 
+`setup.sh` is the single entry point for the package itself: `install`,
+`uninstall`, `check` (audit the links, non-zero on drift), `test` (run the
+in-repo suite), and `version`. It links rather than copies, so a `git pull` in
+the clone is the upgrade. `PREFIX` (default `~/.local`) and the `XDG_*`
+variables choose where the links land.
+
 Man pages install to `share/man/man1/`; put that on your `MANPATH` for
 `man valet-key`.
 
@@ -100,17 +105,19 @@ Man pages install to `share/man/man1/`; put that on your `MANPATH` for
 ```sh
 # one account, stay-logged-in, zero config:
 valet-key shim claude
-valet-key provision claude      # a pool of slots beside ~/.claude
+valet-key provision claude      # slots for ~/.claude, in ~/.valet-key-pool
 claude                          # every session now leases its own slot
 
-# two profiles, chosen by directory:
+# a second profile, chosen by directory. `provision` needs the profile's
+# config dir to exist, so create it first -- it is where the account lives:
 printf 'work ~/work\n' > ~/.config/valet-key/profiles
-valet-key provision claude work # a work pool (beside ~/.claude-work)
-cd ~/work && claude             # -> work profile + its pool
+mkdir -p ~/.claude-work         # the work account's own config dir
+valet-key provision claude work
+cd ~/work && claude             # -> work profile + its pool (log in once)
 cd ~      && claude             # -> personal
 
 # warm a couple of slots so the first sessions skip the login:
-valet-key login                 # log into the next cold slot
+valet-key login                 # log into the next cold slot (agent: claude)
 valet-key login check           # warm/total, days-to-cap per slot
 ```
 
@@ -137,13 +144,19 @@ $ claude
 The pool is the heart of it:
 
 - **Slots share state, own their login.** Every slot symlinks the account's
-  projects, plugins, settings, and history back to the real config; the only
-  private file is its credentials. Nothing forks except the token.
+  directories (projects, plugins, ...) and its user-edited settings files back
+  to the real config, so work done in a slot lands in the real account. The
+  credentials file is never shared — that is the isolation target — and neither
+  are runtime lock files, which have to be per-slot or a stalled lock wedges
+  every session at once. Anything else a slot writes is simply born there.
 - **Lazy login.** Slots ship cold. The first session to reach a cold slot logs
   in once; it's warm forever after. You pay only for the concurrency you use.
 - **Automatic reclaim.** A lease is held by the session's PID and freed when
   that process ends. A dead holder is reclaimed on the next lease, guarded by a
   liveness and command-name check so PID reuse can't steal a live slot.
+  Recycling is serialised per pool: judging a PID dead and then acting on it is
+  a read-then-write, and two sessions doing it at once could otherwise land on
+  the same slot — which would put them back on one shared credentials file.
 - **Graceful overflow.** If every slot is leased, the launch falls back to the
   base config dir. It degrades to today's behaviour; it never fails.
 - **Cap awareness.** Where an agent records an absolute token cap that
@@ -161,36 +174,70 @@ valet-key provision <agent> [profile] [N]     create/refresh a pool (N=5)
 valet-key login [warm|check|force|stale] [agent] [profile]    slot logins
 valet-key stale                    all pools: warm slots near their token cap
 valet-key check [agent [profile]]  audit a pool, or the whole setup (drift)
+valet-key resolve [agent]          dry run: which profile/pool applies HERE
 valet-key doctor                   environment health: PATH, creds, saturation
 valet-key shim <agent>...          make `<agent>` route through valet-key
 valet-key unshim <agent>... | shims | init | shims-dir | rehash
 ```
 
-Two diagnostics, split by what they can fix. **`check`** audits the
+**`resolve`** is the dry run: it reports which profile and pool a launch from
+this directory would use, shows the working (which hook answered, which were
+never asked, what each guard says), and launches nothing. It exits non-zero if
+a guard would refuse, so `valet-key resolve && something` means what it looks
+like. Reach for it whenever routing surprises you.
+
+Three diagnostics, split by what they can fix. **`check`** audits the
 *provisioned* state (pools present, slot counts, structural drift), across the
-whole setup when given no argument; it exits non-zero on drift. **`doctor`**
-sweeps the *live environment* `check` can't touch: whether each agent command
-actually routes through valet-key (the shim wins on `PATH`), whether an API key
-in your shell is shadowing a slot's login, whether a pool is saturated (the next
-launch would overflow to the shared base), and whether any slot is near its cap.
-It's read-only and fails only on a real breakage (a shim that doesn't
-intercept); the rest are advisories.
+whole setup when given no argument; it exits non-zero on drift, including a
+pool whose slot count no longer matches the `N` you last provisioned.
+**`doctor`** sweeps the *live environment* `check` can't touch: whether each
+agent command actually routes through valet-key (the shim wins on `PATH`),
+whether an API key in your shell is shadowing a slot's login, whether a pool
+is saturated (the next launch would overflow to the shared base), whether any
+slot is near its cap, whether a profile you can actually reach has **no pool
+at all** (with none, every session for it shares one credentials file — the
+original problem, back again, and `check` can't see it because it audits pools
+that exist), and whether the hooks you installed are actually being read. It's
+read-only, and it exits non-zero only on a *breakage* — a shim that doesn't
+intercept, or a hook that isn't running or is answering outside its contract.
+The rest are advisories, so a red line always means something is broken.
+
+## Which profile a command acts on
+
+A profile named on the command line is used as given. Omitted, it is
+**resolved from where you are**, exactly as a launch would resolve it — so
+`provision`, `check`, `login` and `resolve` run inside a work tree all act on
+the *work* pool. Each of them prints the pool it settled on, because a
+resolution you can't see is one you can't check.
 
 ## Configuration
 
 - **`VALET_KEY_CONFIG`** is the config dir: the `profiles` rules, the optional
   `dirs` overrides, and the optional `hooks/` dirs. Default
-  `~/.config/valet-key`.
+  `$XDG_CONFIG_HOME/valet-key`, else `~/.config/valet-key`.
+- **`VALET_KEY_HOOKS`** is the hooks root (`profile.d/`, `guard.d/`). Default
+  `$VALET_KEY_CONFIG/hooks`.
 - **`VALET_KEY_SHIMS_DIR`** is where shims live; put it first on `PATH`.
-  Default `~/.local/share/valet-key/shims`.
+  Default `$XDG_DATA_HOME/valet-key/shims`, else
+  `~/.local/share/valet-key/shims`.
 - **`VALET_KEY_DEFAULT_PROFILE`** is the unmatched fallback. Default
   `personal`.
 - **`VALET_KEY_POOL_ROOT`** is the slot-pool root. Default `~/.valet-key-pool`.
 - **`VALET_KEY_SLOT_STALE_DAYS`** is the cap-warning window. Default `7`.
+- **`VALET_KEY_VERBOSE`** forces the `valet-key: <agent> profile=... config=...`
+  launch line back on for an adapter that declares itself quiet (`gcloud`, whose
+  callers parse its stderr). Loud adapters print it anyway.
+- **`NO_COLOR`** keeps the `check` / `doctor` / `setup.sh` markers plain. They
+  are plain when piped regardless, so this is only for a colour-free terminal.
 - **`<AGENT>_BIN`** overrides an adapter's resolved binary, for an odd install
   or a test (`CLAUDE_BIN`, `CODEX_BIN`, ...).
 
 Pool size is the `N` argument to `provision` (default `5`), not an env var.
+`provision` **converges** on `N`: re-run it with a smaller number and the
+surplus cold slots are removed, so it is a resize rather than a high-water
+mark. A surplus slot that is leased or warm is kept and reported instead —
+a live session is using the one, and the other holds a login you sat through a
+browser flow for.
 Size it to your peak concurrent sessions plus a little headroom, and no higher:
 overflow just falls back to the base config, so undersizing is cheap, while
 oversizing backfires two ways. Idle slots still age toward their token cap
@@ -208,8 +255,6 @@ By default a profile's config lives at `<base>-<profile>` (so `work` becomes
 `~/.claude-work`). To put it somewhere specific (a sealed location, or a tool
 whose env points at a *home* rather than a config dir), add a
 `<agent> <profile> <dir>` line to `$VALET_KEY_CONFIG/dirs`.
-
-### A resolver hook
 
 ### Hooks: the two questions valet-key cannot answer
 
@@ -290,8 +335,13 @@ The chosen profile arrives as `$1` and in `$VALET_KEY_PROFILE`; the agent is in
 valet-key ships none, and nothing installs any. A hook names tools *your* box
 runs, so it belongs to whoever configures the box — you, or your provisioning
 layer. `valet-key doctor` checks whatever it finds: that selectors answer
-quietly and return a usable name, and that guards exit inside the documented
-range.
+quietly and return a usable name, that guards exit inside the documented
+range, and that every file in a hooks directory is executable — one without
+the bit is skipped in silence by both seams, so it looks installed and has
+never run. It also fails on a leftover `$VALET_KEY_CONFIG/context`, the
+single-file hook these two directories replaced: nothing reads it any more,
+and a file that looks wired while enforcing nothing is the worst state this
+seam has.
 
 > **A guard is a reminder, not a wall.** It reflects and refuses; it does not
 > enforce. If you need a real boundary — say, a zero-data-retention tree one
@@ -327,17 +377,30 @@ taught valet-key a new tool. Full field reference in `man valet-key`.
 ## Reference
 
 Complete command, hook, adapter, and environment reference: **`man valet-key`**
-(or `man -l share/man/man1/valet-key.1` from a checkout).
+(or `man -l man/man1/valet-key.1` from a checkout, before installing).
 
 ## Status and license
 
-valet-key is stable and in daily use. It is being published as a standalone
-project extracted from a personal environment repository; a `LICENSE` will
-accompany the release.
+valet-key is stable and in daily use. It is published as a standalone project
+extracted from a personal environment repository. Licensed under Apache-2.0;
+see `LICENSE`.
 
 ## Development
+
+The test suite is POSIX shell with no dependencies beyond a shell and the
+checkout. Run it with either:
+
+    ./setup.sh test        # or: sh test/run
+
+Each `test/*.t` is also runnable alone (`sh test/resolve.t`). They work in a
+scratch directory and touch nothing on the box: no pool, no config, and no
+`$HOME` outside the sandbox.
 
 An 80-column limit is enforced by a tracked pre-commit hook. Enable it once
 per clone:
 
     git config core.hooksPath .githooks
+
+`test/lint.t` checks the same limit, plus `sh` syntax and the executable bit,
+across every tracked file, so a commit landed with `--no-verify` still shows up
+in the suite.

@@ -10,6 +10,11 @@
 # own notes for what order MEANS in each (it decides selection, and does not
 # matter for vetoes).
 #
+# The chmod is not a formality: a hook without the executable bit is SKIPPED,
+# silently, by both seams. `valet-key doctor` reports one as a failure,
+# because a file that looks installed and has never run is the worst state
+# this seam has.
+#
 # These examples are deliberately about ordinary things -- a VPN, a battery, a
 # git remote, a kube context -- because the seam is not about any one
 # integration. Anything that can answer a question with an exit status can be

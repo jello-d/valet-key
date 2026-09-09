@@ -1,4 +1,4 @@
-.TH VALET-KEY 1 "2026-08-04" "valet-key 0.1" "User Commands"
+.TH VALET-KEY 1 "2026-09-09" "valet-key 0.1" "User Commands"
 .SH NAME
 valet-key \- profile-aware, concurrent-safe launcher for coding agents
 .SH SYNOPSIS
@@ -79,13 +79,33 @@ The same, naming the agent explicitly.
 .B valet-key provision \fIagent\fR " [" \fIprofile\fR "] [" \fIN\fR ]
 Create or refresh a slot pool of
 .I N
-slots (default 10) for
-.IR agent / profile
-(profile defaults to the default profile). Slots ship cold \(em the login is
-lazy; the first session to reach a cold slot logs in once.
+slots (default 5) for
+.IR agent / profile .
+Slots ship cold \(em the login is lazy; the first session to reach a cold slot
+logs in once.
+.IP
+It CONVERGES on
+.IR N ,
+creating what is missing and removing what is surplus, so re-running it is a
+resize rather than a high-water mark. A surplus slot that is LEASED or WARM is
+kept rather than discarded \(em a live session is using the one, and the other
+holds a login someone sat through a browser flow for \(em and what could not
+be removed is reported.
+.I N
+is recorded in the pool, which is what lets
+.B check
+audit the size at all.
 .TP
 .B valet-key login \fR[\fIaction\fR] [\fIagent\fR] [\fIprofile\fR]
-Manage logins for the resolved (or named) pool. The
+Manage logins for the resolved (or named) pool.
+.I agent
+defaults to
+.BR claude .
+For
+.IR profile ,
+see
+.B WHICH PROFILE
+below. The
 .I action
 is one of
 .BR warm ", " check ", " force ", " stale .
@@ -111,11 +131,29 @@ login-reminder banner.
 .TP
 .B valet-key check \fR[\fIagent\fR " [" \fIprofile\fR "]]"
 Audit one pool, or with no argument the whole provisioned setup (every pool).
-Reports slot / warm / leased counts and exits non-zero on structural drift (a
-missing pool or a dangling shared link). This is the declarative drift audit;
-see
+Reports slot / warm / leased counts and exits non-zero on structural drift: a
+missing pool, a dangling shared link, or a slot count that no longer matches
+the
+.I N
+.B provision
+was last asked for. This is the declarative drift audit; see
 .B doctor
 for the environmental one.
+.TP
+.B valet-key resolve \fR[\fIagent\fR]
+DRY RUN: report what a launch HERE would do, and launch nothing. Prints the
+resolved profile, the config directory, and the pool behind it; then shows the
+selection chain (which hook answered, and which were never asked because an
+earlier one did) and each guard's verdict. Exits
+.B 1
+if a guard would refuse, so
+.RB ' "valet-key resolve && ..." '
+means what it looks like.
+.IP
+Without it the only way to learn which account a directory routes to was to
+launch the agent and read the announce line off its standard error \(em to run
+the thing you were trying to check first \(em and a surprising answer had
+nothing to inspect.
 .TP
 .B valet-key doctor
 Environment health sweep, read-only. Checks that each agent command actually
@@ -123,15 +161,45 @@ routes through valet-key (the shim wins on
 .BR PATH ),
 that no agent API key is leaking into the environment (it would override a
 slot's login), that no pool is saturated (every slot leased, so the next launch
-overflows to the shared base), and that no warm slot is near its OAuth cap.
-Exits non-zero only on a real breakage (a shim that does not intercept); the
-rest are advisories. Complements
+overflows to the shared base), that no warm slot is near its OAuth cap, that
+no profile you can actually reach is running WITHOUT a pool (with none, every
+session for it shares one credentials file, exactly as if valet-key were not
+installed \(em and
+.B check
+cannot see this, because it audits pools that exist), and that the installed
+hooks are actually being read and are answering inside their contract (see
+.BR "THE HOOK SEAMS" ).
+Exits non-zero only on a BREAKAGE \(em a shim that does not intercept, or a
+hook that is not running or is out of contract; the rest are advisories, so a
+red line always means something is broken. Complements
 .B check
 (declarative drift) as a readiness probe complements a provisioner.
 .TP
 .B valet-key slots \fIverb\fR " [" \fIargs\fR ...]
 Escape hatch to the raw slot-pool library (see
 .BR FILES ).
+The library's own verbs are
+.BR provision ", " lease ", " warm ", " login-check ", " force ", "
+.BR login-stale ", " sync ", and " check ,
+each taking the pool id
+.RI < agent >/< profile >
+and that profile's base config directory;
+.B counts
+takes the pool id alone;
+.B stale
+takes an optional agent to scan (its cap policy is per-agent, so an unfiltered
+scan can only be right for one agent at a time); and
+.B pools
+takes no arguments.
+.IP
+This verb does NOT load the agent's adapter. Everything the library needs
+beyond those arguments \(em which file to isolate, which to share, which
+process name identifies a live holder \(em normally arrives from the adapter
+through the environment, so a bare
+.B slots
+call silently falls back to the built-in defaults, which are Claude Code's. On
+another agent that means the wrong credential file, and therefore wrong warm
+counts. Use it for debugging, and prefer the wrapping commands.
 .SS Shims
 .TP
 .B valet-key shim \fIagent\fR ...
@@ -149,14 +217,26 @@ List the current shims.
 .B valet-key init
 Print the shell line that prepends the shims directory to
 .BR PATH .
-Add it to your profile, e.g.
-.RB ' "eval \e$(valet-key init)" '.
+Add it to your profile:
+.PP
+.RS
+.EX
+eval "$(valet-key init)"
+.EE
+.RE
 .TP
 .B valet-key shims-dir
 Print the shims directory.
 .TP
 .B valet-key rehash
 Re-point every existing shim at the current engine (after moving valet-key).
+.SS Help
+.TP
+.B valet-key help
+Print the usage summary (also the output of
+.B valet-key
+with no arguments, or with
+.BR \-h / \-\-help ).
 .SH PROFILES
 A
 .B profile
@@ -190,6 +270,38 @@ overriding the
 .RI < base >- P
 default \(em for a config dir that must live at a specific path, or a tool
 whose environment variable points at a home rather than a config directory.
+.SH WHICH PROFILE
+A profile named on the command line is used as given. OMITTED, it is RESOLVED
+exactly as a launch from the same directory would resolve it \(em so
+.B provision
+.RI ( check ", " login ", " resolve )
+run inside a work tree act on the WORK pool.
+.PP
+These used to disagree:
+.B login
+resolved from context while
+.B provision
+and
+.B check
+fell back to the default profile. So
+.RB ' "cd ~/work && valet-key provision claude" '
+built the PERSONAL pool while
+.RB ' "valet-key login" '
+one line later acted on WORK, and nothing said so \(em the pool you thought
+you had made was somewhere else. A tool whose whole job is choosing an account
+cannot hold two answers to where "here" is.
+.PP
+Because the answer now depends on context, each of those commands PRINTS the
+pool it settled on. Resolution you cannot see is resolution you cannot check;
+.B valet-key resolve
+shows the reasoning behind it.
+.PP
+A profile name is validated as a DNS label wherever it enters \(em from a
+hook, from the
+.I profiles
+table, or from the command line \(em because it becomes a directory component
+and half a pool id on every one of those paths. An invalid one is an error,
+never a silent fall back to the default.
 .SH THE HOOK SEAMS
 valet-key must decide two things it cannot always know: WHICH PROFILE applies
 here, and WHETHER IT MAY LAUNCH at all. Its own answers are the directory table
@@ -205,7 +317,7 @@ hooks run in name order with
 .B VALET_KEY_AGENT
 in the environment.
 .TP
-.I $VALET_KEY_CONFIG/hooks/profile.d/*
+.I $VALET_KEY_HOOKS/profile.d/*
 SELECTION. Each runs until one ANSWERS. Exit
 .B 0
 printing a name selects that profile; exit
@@ -221,7 +333,7 @@ cannot be mistaken for one that deliberately said "baseline". The name is
 validated as a DNS label; an invalid one is a hard error, never a silent fall
 back.
 .TP
-.I $VALET_KEY_CONFIG/hooks/guard.d/*
+.I $VALET_KEY_HOOKS/guard.d/*
 VETO, with the chosen profile as
 .RI $ 1
 and in
@@ -240,6 +352,12 @@ Any-refusal-wins is not a style choice: adding a guard must only ever make
 things stricter, or a second guard could silently cancel the first. That is
 what lets two unrelated vetoes \(em a boundary and a VPN check \(em compose
 without either knowing the other exists.
+.PP
+A hook is only consulted if it is EXECUTABLE; a file without the bit is
+skipped in silence by both seams.
+.B doctor
+reports one as a failure for that reason \(em it looks installed, and it has
+never run.
 .PP
 valet-key ships NO hooks and needs none: with none installed it runs a single
 .I personal
@@ -275,6 +393,11 @@ the slot file policy
 .RB ( ADAPTER_CRED_FILE ,
 .BR ADAPTER_STATIC_FILES ,
 .BR ADAPTER_SEED_FILES ),
+the command-name fragment that identifies a live lease holder
+.RB ( ADAPTER_PROC_MATCH ,
+required on a pooled agent \(em without it any process at all looks like a
+live holder, and a lease could be reclaimed from a running session after a
+PID is reused),
 the login and cap knobs
 .RB ( ADAPTER_UNSET_ENV ,
 env scrubbed so a stray API key cannot override the stored login;
@@ -313,6 +436,14 @@ Where shims live. Default
 else
 .IR ~/.local/share/valet-key/shims .
 .TP
+.B VALET_KEY_HOOKS
+The hooks root holding
+.I profile.d/
+and
+.IR guard.d/ .
+Default
+.IR $VALET_KEY_CONFIG/hooks .
+.TP
 .B VALET_KEY_DEFAULT_PROFILE
 The unmatched fallback profile. Default
 .IR personal .
@@ -328,35 +459,158 @@ and
 .BR "login stale" .
 Default 7.
 .TP
+.B VALET_KEY_VERBOSE
+When non-empty, print the launch line even for an adapter that declares itself
+quiet
+.RB ( ADAPTER_QUIET ,
+e.g.
+.BR gcloud ,
+whose callers parse its standard error). Loud adapters print it regardless.
+.TP
+.B NO_COLOR
+When set, the
+.BR check ", " doctor ", and " setup.sh
+markers are emitted plain rather than coloured. They are also plain whenever
+standard output is not a terminal, so a pipe needs no flag.
+.TP
 .BI < AGENT >_BIN
 Override an adapter's resolved binary (odd install or testing):
 .BR CLAUDE_BIN ", " CODEX_BIN ", " GEMINI_BIN ", " GCLOUD_BIN .
+The path is VERIFIED to be an executable file, and a bad one is an error
+rather than something handed on: an unchecked override surfaced much later and
+in disguise, as a slot login reporting "still cold" with no hint that the
+binary it tried to run was not there.
 The pool size is the
 .I N
 argument to
 .BR provision ,
 not an environment variable.
+.SH EXIT STATUS
+.TP
+.B claude \fR/\fB valet-key run
+The real agent's own status, since valet-key
+.BR exec s
+it. A guard refusal aborts before that with
+.BR 1 .
+.TP
+.B valet-key check
+.B 0
+when every audited pool is present and structurally sound,
+.B 1
+on a missing pool, a dangling shared link, a slot count that no longer matches
+the recorded size, or a pool whose agent has no adapter.
+.TP
+.B valet-key resolve
+.B 0
+if a launch here would proceed,
+.B 1
+if a guard would refuse it.
+.TP
+.B valet-key doctor
+.B 0
+unless a real breakage was found (an agent command that does not route through
+valet-key, a retired hook file still in place, a hook that is not being read
+or is out of contract).  Warnings \(em a leaked API key, a saturated pool, a
+profile with no pool, a slot near its cap \(em are advisories and do not
+change the status.
+.TP
+.B setup.sh check
+.B 0
+when the install links are all present and pointing at this tree,
+.B 1
+on drift.
+.PP
+Everything else exits
+.B 0
+on success and
+.B 1
+on a usage or lookup error (an unknown command, an agent with no adapter, a
+profile name that is not a usable label); the raw
+.B slots
+library exits
+.B 2
+on an unknown verb.
+.SH OUTPUT
+.BR check ", " doctor ", and " setup.sh
+speak a plain MARKER contract \(em lines beginning
+.BR [OK] ", " [FAIL] ", " [WARN] ", or " [IGNORE]
+\(em so an integrator can restyle them in its own palette while folding the
+exit status into its own report. Standalone at a terminal valet-key colours
+them itself; piped, or under
+.BR NO_COLOR ,
+they stay plain. The markers are a string convention, not a dependency on any
+integrator's styling code.
 .SH FILES
 .TP
 .I bin/valet-key
-The engine. Self-locates its
+The engine. Self-locates
 .I libexec
-and
+as a sibling of its own resolved path, so an install is a symlink and needs no
+configuration.
 .I share
-as siblings under one prefix.
+holds templates and examples for a human; nothing in the engine reads it.
 .TP
 .I libexec/slots
 The credential-slot pool library.
 .TP
 .I libexec/adapters/<agent>
-Per-agent adapters.
+Per-agent adapters. One file here is one agent valet-key knows about, which is
+what
+.BR shim ", " check " and " doctor
+enumerate.
+.TP
+.I libexec/adapter.sh
+Helpers shared by every adapter, sourced before them \(em notably the real-
+binary lookup, so the
+.BI < AGENT >_BIN
+check and the never-return-the-shim rule have one implementation rather than
+one per agent. Deliberately NOT in
+.IR adapters/ ,
+where it would become a phantom agent.
+.TP
+.I setup.sh
+The package's own installer: links
+.IR bin ,
+.IR libexec ,
+.IR share ,
+and the man pages into a prefix
+.RB ( install ),
+removes those links
+.RB ( uninstall ),
+audits them
+.RB ( check ),
+runs the in-repo suite
+.RB ( test ),
+or prints the packaged version
+.RB ( version ).
+.I PREFIX
+(default
+.IR ~/.local )
+and the
+.I XDG_*
+variables choose the destination.
+.TP
+.I <share>/hooks/
+Annotated example hooks to copy and edit. NOTHING there is installed.
+.TP
+.I <share>/profiles
+.TQ
+.I <share>/dirs
+Commented templates for the two configuration tables below.
 .TP
 .I $VALET_KEY_CONFIG/hooks/profile.d/
 .TQ
 .I $VALET_KEY_CONFIG/hooks/guard.d/
 The optional integrator hooks: the directory says which question a hook
-answers. See
+answers, and only EXECUTABLE files are consulted. See
 .BR "THE HOOK SEAMS" .
+.TP
+.I $VALET_KEY_CONFIG/context
+The RETIRED single-file hook, replaced by the two directories above. Nothing
+reads it;
+.B doctor
+fails if one is still present, because a file that looks wired while enforcing
+nothing is worse than no file at all.
 .TP
 .I $VALET_KEY_CONFIG/profiles
 The built-in directory resolver: lines
@@ -379,8 +633,32 @@ pinning that pool's directory instead of the
 .RI < base >- profile
 default.
 .TP
+.I $VALET_KEY_POOL_ROOT/<agent>/<profile>/.size
+The slot count
+.B provision
+was last asked for.
+.B check
+compares the pool against it; a pool without one predates the record, so there
+is no declared value to audit and none is invented.
+.TP
 .I $VALET_KEY_POOL_ROOT/<agent>/<profile>/slot-N
-The slot directories.
+The slot directories. A slot is
+.I slot-
+followed by digits and nothing else. An agent may create its own lock
+directory beside the slot it is using; such a sibling is not a slot, and is
+not counted as one.
+.IP
+Each slot is a thin view of that profile's base config: subdirectories and the
+adapter's
+.B ADAPTER_STATIC_FILES
+are SYMLINKS back to the base, so work done in a slot lands in the real
+account; the
+.B ADAPTER_SEED_FILES
+are private copies carrying no token; the
+.B ADAPTER_CRED_FILE
+is private and never seeded, which is the whole point; and lock files are
+private too \(em a shared lock would let one slot's stalled token refresh
+wedge every session at once.
 .SH EXAMPLES
 Set up standalone with two profiles:
 .PP
