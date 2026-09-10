@@ -14,6 +14,7 @@
 #   valet-key stale              all pools: warm slots near their cap
 #   valet-key check [agent [profile]]    audit a pool, or the whole setup
 #   valet-key resolve [agent]    dry run: which profile/pool applies HERE
+#   valet-key reconcile [agent [profile]]   share agent-written state pool-wide
 #   valet-key doctor             environment health (PATH, creds, saturation)
 #   valet-key slots <verb> ...   raw slot-pool escape hatch
 #
@@ -100,7 +101,8 @@ load_adapter() {
   # previous adapter's value for a knob this one legitimately omits.
   unset ADAPTER_ENV ADAPTER_BASE ADAPTER_SLOTS ADAPTER_CRED_FILE \
         ADAPTER_STATIC_FILES ADAPTER_SEED_FILES ADAPTER_PROC_MATCH \
-        ADAPTER_UNSET_ENV ADAPTER_LOGIN_ARGS ADAPTER_EXP_PATTERN ADAPTER_QUIET
+        ADAPTER_UNSET_ENV ADAPTER_LOGIN_ARGS ADAPTER_EXP_PATTERN \
+        ADAPTER_QUIET ADAPTER_MERGE_FILES
   . "$_a"
   # The slot-pool vars are only read when ADAPTER_SLOTS=1; a non-agent adapter
   # (e.g. gcloud, slots=0) legitimately omits them, so default to empty here.
@@ -115,6 +117,16 @@ load_adapter() {
   export VALET_KEY_UNSET_ENV=${ADAPTER_UNSET_ENV:-}
   export VALET_KEY_LOGIN_ARGS=${ADAPTER_LOGIN_ARGS:-}
   export VALET_KEY_EXP_PATTERN=${ADAPTER_EXP_PATTERN:-}
+  # Reconciliation of agent-written-but-shared files. The engine owns WHICH
+  # directories and WHEN; the FORMAT is the adapter's, because valet-key is
+  # POSIX shell with no runtime dependencies and merging JSON is not shell
+  # work. An agent that declares no merge files simply has none of this.
+  export VALET_KEY_MERGE_FILES=${ADAPTER_MERGE_FILES:-}
+  VALET_KEY_MERGE_CMD=
+  if [ -n "${ADAPTER_MERGE_FILES:-}" ] && [ -x "$LIBEXEC/merge/$1" ]; then
+    VALET_KEY_MERGE_CMD=$LIBEXEC/merge/$1
+  fi
+  export VALET_KEY_MERGE_CMD
 }
 
 # config dir for <profile> with this agent. A per-(agent, profile) OVERRIDE in
@@ -451,6 +463,20 @@ m_resolve() {
   return 0
 }
 
+# reconcile: bring one pool's agent-written-but-shared files into line, across
+# the base and every slot. `--check` reports which copies are behind instead.
+#
+# The launch path already pulls into the slot it is about to use, so this is
+# the OUTWARD half: valet-key execs the agent and is therefore never around
+# when a session ends to push what that session learned to its siblings. A
+# sweep is how it gets there -- from a provisioning run, a timer, or by hand.
+m_reconcile() {
+  load_adapter "${1:-claude}"
+  _prof=$(resolve_pool "${2:-}")
+  echo "valet-key: reconciling $(pool_id "$_prof")"
+  "$SLOTS" reconcile "$(pool_id "$_prof")" "$(profile_dir "$_prof")" "${3:-}"
+}
+
 # check: one pool with an agent arg; with NO args, the whole provisioned setup
 # (every pool). The declarative DRIFT audit -- what provisioning owns and can
 # re-fix. Non-zero on any missing pool or structural drift.
@@ -703,6 +729,23 @@ m_doctor() {
     done
   done
 
+  # Copies of the agent-written shared files that have fallen behind. Not a
+  # breakage -- nothing is broken, the pool just has not converged yet, and a
+  # launch reconciles the slot it uses anyway. Worth surfacing because the
+  # symptom (being asked to trust a repo you already trusted) reads as the
+  # tool misbehaving rather than as drift.
+  for _ag in $(list_agents); do
+    load_adapter "$_ag"
+    [ -n "${VALET_KEY_MERGE_CMD:-}" ] || continue
+    for _p in $("$SLOTS" pools 2>/dev/null | grep "^$_ag/" || true); do
+      _pr=${_p#*/}; _pb=$(profile_dir "$_pr")
+      "$SLOTS" reconcile "$_p" "$_pb" --check >/dev/null 2>&1 &&
+        continue
+      _dwarn "$_p: shared state has not converged across the pool"
+      _dfix "valet-key reconcile $_ag $_pr"
+    done
+  done
+
   _st=$(m_stale 2>/dev/null || true)
   if [ -n "$_st" ]; then
     _oifs=$IFS; IFS='
@@ -776,6 +819,7 @@ case "$_v" in
   login)      m_login "$@" ;;
   check)      m_check "$@" ;;
   resolve)    m_resolve "$@" ;;
+  reconcile)  m_reconcile "$@" ;;
   doctor)     m_doctor ;;
   stale)      m_stale ;;
   slots)      "$SLOTS" "$@" ;;

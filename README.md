@@ -159,6 +159,15 @@ The pool is the heart of it:
   the same slot — which would put them back on one shared credentials file.
 - **Graceful overflow.** If every slot is leased, the launch falls back to the
   base config dir. It degrades to today's behaviour; it never fails.
+- **Shared state, without a shared file.** Some things an agent records aren't
+  per-session at all — Claude Code keeps per-project trust, allowed tools and
+  MCP approvals in `.claude.json`. That file can't be symlinked (the agent
+  rewrites it constantly, so sessions would clobber each other), so each slot
+  gets its own copy and `valet-key reconcile` converges them across the pool.
+  A launch reconciles the slot it's about to use, so you answer "do you trust
+  this folder?" once rather than once per slot. The merge is last-writer-wins
+  per project, never a union — otherwise revoking trust on one slot would be
+  quietly undone by a stale copy on another.
 - **Cap awareness.** Where an agent records an absolute token cap that
   refreshing can't extend, `valet-key stale` surfaces slots nearing it so you
   can re-login first.
@@ -175,6 +184,7 @@ valet-key login [warm|check|force|stale] [agent] [profile]    slot logins
 valet-key stale                    all pools: warm slots near their token cap
 valet-key check [agent [profile]]  audit a pool, or the whole setup (drift)
 valet-key resolve [agent]          dry run: which profile/pool applies HERE
+valet-key reconcile [agent [profile]]   share agent-written state pool-wide
 valet-key doctor                   environment health: PATH, creds, saturation
 valet-key shim <agent>...          make `<agent>` route through valet-key
 valet-key unshim <agent>... | shims | init | shims-dir | rehash

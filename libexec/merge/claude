@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Reconcile Claude Code's .claude.json across one pool's config dirs.
+
+WHY THIS EXISTS. A slot's .claude.json is a PRIVATE COPY, not a symlink,
+because the agent rewrites it constantly and N sessions sharing one inode
+would interleave read-modify-write and lose each other's edits. That is the
+right call -- but it means everything the agent records there is per-slot, and
+`projects[<path>]` is where trust, per-project allowed tools and MCP approvals
+live. So the same repo has to be trusted again on every slot it has not been
+opened in yet, and a freshly provisioned slot starts knowing nothing.
+
+So: keep the private copies, and RECONCILE them. Safer than sharing an inode,
+because every writer still owns its own file and this only ever runs when no
+session holds the destination.
+
+WHAT IT MERGES, AND WHAT IT REFUSES TO. Only `projects`. Everything else in
+the destination is left exactly as found -- oauthAccount and userID above all,
+which are identity and must never move even between slots, and the counters
+and caches, for which a merge would be meaningless.
+
+THE MERGE RULE IS LAST-WRITER-WINS PER PROJECT, NOT A UNION. Union is the
+intuitive design and the wrong one: `hasTrustDialogAccepted`, `allowedTools`
+and `enabledMcpjsonServers` all live inside a project entry, so unioning them
+would mean that revoking trust, or removing an allowed tool, gets silently
+restored from a stale copy on another slot. A mechanism that resurrects
+revoked permissions is worse than the problem it solves. Entries are taken
+whole, newest file wins, and the union happens only ACROSS project keys -- so
+a new project propagates everywhere, and an edit (including a revocation)
+takes the newest version rather than being combined with an older one.
+
+The clock is file mtime. It is coarse, and two slots editing the SAME project
+within the same second is a coin toss -- which is acceptable, because the loser
+is one project's settings and the next reconcile converges.
+
+Usage:
+  merge/claude <file> <dst> <src>...     merge srcs into dst (atomically)
+  merge/claude --check <file> <dst> <src>...   exit 1 if dst is behind
+
+<file> is the basename being reconciled, so one helper can serve several
+files. <src>... is every copy in the partition, INCLUDING dst: dst competes
+on its own mtime like any other, which is what keeps a purely-local edit from
+being clobbered by an older sibling.
+
+Exit: 0 ok / current, 1 (--check only) dst would change, 2 error.
+"""
+
+import json
+import os
+import sys
+import tempfile
+
+# The only key reconciled. Deliberately a allowlist, not a denylist: a new
+# top-level key that Claude Code starts writing must not silently become
+# something we copy between config directories.
+RECONCILED = ("projects",)
+
+SUPPORTED = (".claude.json",)
+
+
+def load(path):
+    """(document, mtime), or (None, 0) if unreadable or mid-write.
+
+    A source being written right now can be caught half-flushed. Skipping it
+    is correct: the copy is transient, its owner will write it again, and the
+    next reconcile picks it up. Failing the whole run over one torn read
+    would make this fragile exactly when the pool is busy.
+    """
+    try:
+        with open(path, "r") as fh:
+            return json.load(fh), os.path.getmtime(path)
+    except (OSError, ValueError):
+        return None, 0
+
+
+def merged_projects(sources):
+    """{path: entry}, each entry from whichever source last wrote it."""
+    best = {}
+    for path in sources:
+        doc, mtime = load(path)
+        if doc is None:
+            continue
+        projects = doc.get("projects")
+        if not isinstance(projects, dict):
+            continue
+        for key, entry in projects.items():
+            if key not in best or mtime > best[key][0]:
+                best[key] = (mtime, entry)
+    return {k: v for k, (_, v) in best.items()}
+
+
+def write_atomically(path, doc):
+    """Replace <path> in one step, preserving its mode.
+
+    tmp + rename so a reader never sees a partial file: the agent is about to
+    be exec'd against this directory and a truncated config would be a hard
+    failure at the worst moment.
+    """
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        mode = 0o600
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".vk-merge-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def main(argv):
+    check = False
+    if argv and argv[0] == "--check":
+        check = True
+        argv = argv[1:]
+    if len(argv) < 2:
+        sys.stderr.write(__doc__.split("Usage:", 1)[1])
+        return 2
+
+    name, dst, sources = argv[0], argv[1], argv[2:]
+    if name not in SUPPORTED:
+        sys.stderr.write("merge/claude: cannot reconcile '%s'\n" % name)
+        return 2
+
+    current, _ = load(dst)
+    if current is None:
+        # No destination to merge INTO. Not an error: a pool member may have
+        # no copy yet (a slot provisioned before its first launch). Creating
+        # one from siblings would invent the top-level state -- identity,
+        # onboarding, caches -- that this deliberately never touches.
+        return 0
+
+    wanted = dict(current)
+    for key in RECONCILED:
+        if key == "projects":
+            wanted["projects"] = merged_projects(sources)
+
+    if wanted == current:
+        return 0
+    gained = (len(wanted.get("projects", {}))
+              - len(current.get("projects", {})))
+    if check:
+        sys.stdout.write("%s is behind (%+d project(s))\n" % (dst, gained))
+        return 1
+
+    write_atomically(dst, wanted)
+    if gained:
+        sys.stdout.write("%s: %+d project(s)\n" % (dst, gained))
+    else:
+        sys.stdout.write("%s: refreshed\n" % dst)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as exc:                       # never abort a launch
+        sys.stderr.write("merge/claude: %s\n" % exc)
+        sys.exit(2)

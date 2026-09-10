@@ -140,6 +140,45 @@ was last asked for. This is the declarative drift audit; see
 .B doctor
 for the environmental one.
 .TP
+.B valet-key reconcile \fR[\fIagent\fR "[" \fIprofile\fR "]] [" \-\-check ]
+Converge the agent's SHARED-BUT-AGENT-WRITTEN files across the pool: the base
+config directory and every slot.
+.B \-\-check
+reports which copies are behind and exits non-zero, changing nothing.
+.IP
+Some state an agent keeps is not per-session at all. Claude Code records
+per-project trust, allowed tools and MCP approvals in
+.IR .claude.json ,
+which is a PRIVATE COPY per slot \(em it has to be, because the agent
+rewrites it constantly and sessions sharing one file would interleave
+read-modify-write. The consequence is that the same repository asks to be
+trusted again on every slot it has not been opened in, and a newly provisioned
+slot starts knowing nothing.
+.IP
+So the copies stay private and are RECONCILED instead. That is strictly safer
+than sharing one file: every writer still owns its own, and the worst case is
+a merge that loses a cycle and is redone on the next one rather than a
+corrupted config.
+.IP
+The merge is LAST-WRITER-WINS per project, NOT a union. Trust and allowed
+tools live inside a project entry, so unioning them would mean that revoking
+trust, or removing a tool, gets silently restored from a stale copy on another
+slot \(em a mechanism that resurrects revoked permissions is worse than the
+problem it solves. Entries are taken whole from the newest copy; the union is
+only ACROSS projects, so a new one propagates and an edit (including a
+removal) wins.
+.IP
+Identity never moves, even between slots of one pool, and never between pools:
+the account is not shared state. Nor are counters and caches, for which a
+merge would be meaningless.
+.IP
+A launch already reconciles the slot it is about to use, so this verb is the
+outward half \(em valet-key
+.BR exec s
+the agent and is therefore never around when a session ends to push what it
+learned to the other slots. Run it from a provisioning pass, a timer, or by
+hand.
+.TP
 .B valet-key resolve \fR[\fIagent\fR]
 DRY RUN: report what a launch HERE would do, and launch nothing. Prints the
 resolved profile, the config directory, and the pool behind it; then shows the
@@ -167,6 +206,9 @@ session for it shares one credentials file, exactly as if valet-key were not
 installed \(em and
 .B check
 cannot see this, because it audits pools that exist), and that the installed
+no pool's shared state has fallen out of step across its slots (see
+.BR reconcile ),
+and that the installed
 hooks are actually being read and are answering inside their contract (see
 .BR "THE HOOK SEAMS" ).
 Exits non-zero only on a BREAKAGE \(em a shim that does not intercept, or a
@@ -393,6 +435,10 @@ the slot file policy
 .RB ( ADAPTER_CRED_FILE ,
 .BR ADAPTER_STATIC_FILES ,
 .BR ADAPTER_SEED_FILES ),
+the agent-written files that should nonetheless be common to the pool
+.RB ( ADAPTER_MERGE_FILES ,
+reconciled by
+.IR libexec/merge/<agent> ),
 the command-name fragment that identifies a live lease holder
 .RB ( ADAPTER_PROC_MATCH ,
 required on a pooled agent \(em without it any process at all looks like a
@@ -559,6 +605,14 @@ what
 .BR shim ", " check " and " doctor
 enumerate.
 .TP
+.I libexec/merge/<agent>
+The per-agent reconciler for that agent's
+.BR ADAPTER_MERGE_FILES .
+The engine owns WHICH directories and WHEN; the FORMAT is the helper's,
+because valet-key is POSIX shell with no runtime dependencies and merging a
+config document is not shell work. An agent with no helper simply has no
+reconciliation.
+.TP
 .I libexec/adapter.sh
 Helpers shared by every adapter, sourced before them \(em notably the real-
 binary lookup, so the
@@ -640,6 +694,11 @@ was last asked for.
 .B check
 compares the pool against it; a pool without one predates the record, so there
 is no declared value to audit and none is invented.
+.TP
+.I $VALET_KEY_POOL_ROOT/<agent>/<profile>/.reconciled/
+When each slot was last brought up to date, so a launch can skip the work when
+nothing has changed. valet-key's own bookkeeping, kept OUT of the slots: an
+agent's config directory belongs to the agent.
 .TP
 .I $VALET_KEY_POOL_ROOT/<agent>/<profile>/slot-N
 The slot directories. A slot is

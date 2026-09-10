@@ -56,7 +56,8 @@ is_shell() {   # <path>
 # and test/lib.sh are sourced, so their mode does not matter.
 wants_exec() {   # <path>
   case ${1#"$HERE"/} in
-    bin/*|libexec/slots|setup.sh|share/hooks/*.d/*|.githooks/*) return 0 ;;
+    bin/*|libexec/slots|libexec/merge/*|setup.sh|share/hooks/*.d/*) return 0 ;;
+    .githooks/*) return 0 ;;
   esac
   return 1
 }

@@ -16,11 +16,23 @@
 # What is shared vs private:
 #   - directories                : DIR SYMLINK to base (app writes inside them).
 #   - the STATIC files           : FILE SYMLINK to base (user-edited, ~stable).
-#   - the SEED files             : private copy (rewritten each run; no token).
+#   - the SEED files             : private copy, made ONCE if absent.
 #   - the CRED file ($CRED_FILE) : PRIVATE, never seeded -- isolation target.
 #   - *.lock, every other file   : private, born in-slot.
-# The agent adapter supplies CRED_FILE / STATIC_FILES / SEED_FILES via the
-# environment; the defaults below are Claude Code's.
+#
+# The split is by WHO WRITES, not by what a file holds. A human-edited file can
+# be symlinked: edits are rare and a person resolves a conflict. An
+# AGENT-written file cannot, because N sessions on one inode interleave
+# read-modify-write and lose each other's edits -- so those are private copies.
+#
+# That leaves a third case: agent-written, but wanted in common. .claude.json
+# is the example -- it carries per-project trust, allowed tools and MCP
+# approvals, which nobody wants to re-answer per slot. Those are the MERGE
+# files: still private copies, RECONCILED across the pool afterwards. See
+# `reconcile` below.
+#
+# The agent adapter supplies CRED_FILE / STATIC_FILES / SEED_FILES /
+# MERGE_FILES via the environment; the defaults below are Claude Code's.
 #
 # Verbs (a POOL is <id> = <agent>/<profile>; <base> is that profile's config
 # dir for the agent):
@@ -35,7 +47,10 @@
 #   login-stale <id> <base>     re-login every slot within STALE_DAYS of its cap
 #   stale                       ALL pools: WARM slots within STALE_DAYS of cap,
 #                               "<id>/<slot> <days>d" a line (read-only)
-#   sync      <id> <base>       re-fan the shared links across existing slots
+#   sync      <id> <base>       re-fan the shared links across existing slots,
+#                               and reconcile the merge files pool-wide
+#   reconcile <id> <base> [--check]   converge the merge files across the
+#                               partition (base + slots), or report drift
 #   check     <id> <base>       audit the pool; non-zero on structural drift
 #   pools                       list pool ids (<agent>/<profile>), one per line
 #   counts    <id>              "<total> <warm> <leased>" for a pool (machine)
@@ -56,6 +71,12 @@ CRED_FILE=${VALET_KEY_CRED_FILE:-.credentials.json}     # the isolation target
 _static='settings.json settings.local.json CLAUDE.md'
 STATIC_FILES=${VALET_KEY_STATIC_FILES:-$_static}        # shared by symlink
 SEED_FILES=${VALET_KEY_SEED_FILES:-.claude.json}      # private copy, not a link
+
+# Agent-written-but-SHARED files, and the per-agent helper that merges them.
+# Both come from the adapter via the engine; empty means this agent has no such
+# files and every reconcile path below is a no-op.
+MERGE_FILES=${VALET_KEY_MERGE_FILES:-}
+MERGE_CMD=${VALET_KEY_MERGE_CMD:-}
 
 TAB=$(printf '\t')
 SLOTS_QUIET=${SLOTS_QUIET:-0}      # lease self-heals quietly; provision loud
@@ -247,6 +268,90 @@ cmd_provision() {
   fi
 }
 
+# --- reconciling the agent-written shared state -------------------------------
+# THE PARTITION is one pool: the base config dir plus its slots. It is not an
+# arbitrary grouping. .claude.json and its equivalents carry the ACCOUNT
+# identity, so merging across pools would move work state into personal; the
+# pool boundary is exactly the boundary this must not cross. And the BASE
+# belongs in it for two reasons -- it is where an overflowing launch lands, and
+# it is what provision seeds a new slot FROM, so reconciling into it is what
+# makes a freshly created slot start current instead of blind.
+#
+# Why reconcile at all rather than share one file by symlink: these files are
+# written by the AGENT, constantly, so N sessions on one inode would interleave
+# read-modify-write and lose each other's edits. That is why they are private
+# copies in the first place (SEED_FILES). Merging keeps every writer on its own
+# file and converges them afterwards, which is strictly safer -- the worst case
+# is a merge that loses a cycle and is redone on the next one, never a
+# corrupted config.
+#
+# valet-key does not know these formats and must not: it is POSIX shell with no
+# runtime dependencies. It supplies the WHICH and the WHEN; $MERGE_CMD (the
+# adapter's helper) supplies the how.
+partition_members() {   # <base> <pooldir> -- one path per line
+  printf '%s\n' "$1"
+  for _pm in "$2"/slot-*; do is_slot "$_pm" && printf '%s\n' "$_pm"; done
+}
+
+# reconcile <base> <pooldir> [dst] -- merge <file> across the partition into
+# every member, or into <dst> alone. Quiet and non-fatal: this runs on the
+# launch path, and a launcher that refuses to start an agent because a merge
+# helper had a bad day would be a far worse bug than the one it fixes.
+reconcile() {
+  [ -n "$MERGE_FILES" ] && [ -n "$MERGE_CMD" ] || return 0
+  _rb=$1; _rp=$2; _rdst=${3:-}
+  _members=$(partition_members "$_rb" "$_rp")
+  for _f in $MERGE_FILES; do
+    _srcs=""
+    for _m in $_members; do
+      [ -f "$_m/$_f" ] && _srcs="$_srcs $_m/$_f"
+    done
+    [ -n "$_srcs" ] || continue
+    if [ -n "$_rdst" ]; then _targets=$_rdst; else _targets=$_members; fi
+    for _m in $_targets; do
+      [ -f "$_m/$_f" ] || continue
+      # shellcheck disable=SC2086  # _srcs is a deliberate arg list
+      "$MERGE_CMD" "$_f" "$_m/$_f" $_srcs || true
+    done
+  done
+  return 0
+}
+
+# Has anything in the partition been written since this slot was last brought
+# up to date? Purely an optimisation: reconciling is idempotent and the helper
+# does not rewrite an unchanged file, so the only cost of answering wrong is a
+# few milliseconds. The stamps live in the POOL dir, not in the slots -- an
+# agent's config directory is the agent's, and valet-key's bookkeeping has no
+# business appearing inside one.
+needs_reconcile() {   # <base> <pooldir> <slot>
+  [ -n "$MERGE_FILES" ] && [ -n "$MERGE_CMD" ] || return 1
+  _st=$2/.reconciled/${3##*/}
+  [ -f "$_st" ] || return 0                    # never reconciled: do it
+  for _f in $MERGE_FILES; do
+    for _m in $(partition_members "$1" "$2"); do
+      [ -f "$_m/$_f" ] || continue
+      [ "$_m/$_f" -nt "$_st" ] && return 0
+    done
+  done
+  return 1
+}
+
+# The LAUNCH-PATH pull. We hold the lease, so nothing else is writing this
+# slot; the sources may well be live, which is why the helper skips a copy it
+# cannot parse rather than failing. Gated, and silenced: the caller is about to
+# exec an agent and its stdout is not ours to write on.
+lease_reconcile() {   # <base> <pooldir> <slot>
+  needs_reconcile "$1" "$2" "$3" || return 0
+  reconcile "$1" "$2" "$3" >/dev/null 2>&1 || true
+  stamp_reconciled "$2" "$3"
+  return 0
+}
+
+stamp_reconciled() {   # <pooldir> <slot>
+  mkdir -p "$1/.reconciled" 2>/dev/null || return 0
+  : > "$1/.reconciled/${2##*/}" 2>/dev/null || true
+}
+
 # A per-pool mutex, held only for the reclaim pass below. Reclaiming is
 # INSPECT-then-MODIFY (read a pid, judge it, act on it), and no amount of
 # making the individual steps atomic makes that safe: two leasers can read the
@@ -304,6 +409,7 @@ cmd_lease() {
       if mkdir "$lock" 2>/dev/null; then
         echo "$holder" > "$lock/pid"
         seed_slot "$base" "$slot"
+        lease_reconcile "$base" "$pd" "$slot"
         reclaim_unlock "$pd"; echo "$slot"; return 0
       fi
       # Occupied. An empty or absent pid means a claim is mid-flight, which is
@@ -315,6 +421,7 @@ cmd_lease() {
       if mkdir "$lock" 2>/dev/null; then
         echo "$holder" > "$lock/pid"
         seed_slot "$base" "$slot"
+        lease_reconcile "$base" "$pd" "$slot"
         reclaim_unlock "$pd"; echo "$slot"; return 0
       fi
     done
@@ -328,7 +435,9 @@ cmd_lease() {
       is_slot "$slot" || continue
       if mkdir "$slot/.lease" 2>/dev/null; then
         echo "$holder" > "$slot/.lease/pid"
-        seed_slot "$base" "$slot"; echo "$slot"; return 0
+        seed_slot "$base" "$slot"
+        lease_reconcile "$base" "$pd" "$slot"
+        echo "$slot"; return 0
       fi
     done
   fi
@@ -472,7 +581,51 @@ cmd_sync() {
   for slot in "$pd"/slot-*; do
     is_slot "$slot" && seed_slot "$base" "$slot"
   done
+  # ...and reconcile the agent-written shared files ACROSS the partition. This
+  # is the outward direction: valet-key execs the agent, so it is never around
+  # when a session ends to push that session's new state to its siblings. A
+  # sweep is how it gets there.
+  reconcile "$base" "$pd"
+  for slot in "$pd"/slot-*; do
+    is_slot "$slot" && stamp_reconciled "$pd" "$slot"
+  done
   echo "valet-key-slots: synced $id pool"
+}
+
+# reconcile <id> <base> [--check] -- bring the whole partition into line, or
+# report which members are behind without touching anything.
+cmd_reconcile() {
+  id=${1:?pool id required}; base=${2:?base dir required}; mode=${3:-}
+  pd=$(pool_dir "$id")
+  [ -d "$pd" ] || die "no pool for $id ($pd)"
+  if [ -z "$MERGE_FILES" ] || [ -z "$MERGE_CMD" ]; then
+    echo "valet-key-slots: $id -- this agent declares no shared files"
+    return 0
+  fi
+  if [ "$mode" = --check ]; then
+    _behind=0
+    for _f in $MERGE_FILES; do
+      _srcs=""
+      for _m in $(partition_members "$base" "$pd"); do
+        [ -f "$_m/$_f" ] && _srcs="$_srcs $_m/$_f"
+      done
+      [ -n "$_srcs" ] || continue
+      for _m in $(partition_members "$base" "$pd"); do
+        [ -f "$_m/$_f" ] || continue
+        # shellcheck disable=SC2086  # _srcs is a deliberate arg list
+        "$MERGE_CMD" --check "$_f" "$_m/$_f" $_srcs || _behind=$((_behind + 1))
+      done
+    done
+    if [ "$_behind" -eq 0 ]; then
+      echo "valet-key-slots: $id -- all copies current"; return 0
+    fi
+    return 1
+  fi
+  reconcile "$base" "$pd"
+  for slot in "$pd"/slot-*; do
+    is_slot "$slot" && stamp_reconciled "$pd" "$slot"
+  done
+  echo "valet-key-slots: $id -- reconciled"
 }
 
 cmd_check() {
@@ -554,6 +707,7 @@ case "${1:-}" in
   login-stale)  shift; cmd_login_stale "$@" ;;
   stale)        shift; cmd_stale "$@" ;;
   sync)         shift; cmd_sync "$@" ;;
+  reconcile)    shift; cmd_reconcile "$@" ;;
   check)        shift; cmd_check "$@" ;;
   pools)        shift; cmd_pools "$@" ;;
   counts)       shift; cmd_counts "$@" ;;
