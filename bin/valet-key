@@ -472,6 +472,13 @@ m_resolve() {
 # sweep is how it gets there -- from a provisioning run, a timer, or by hand.
 m_reconcile() {
   load_adapter "${1:-claude}"
+  # A POOLLESS agent has exactly one config dir per profile, so there are no
+  # copies to diverge and nothing here to do. Saying "no pool" would read as
+  # drift; this is the design working.
+  if [ "${ADAPTER_SLOTS:-0}" != 1 ]; then
+    echo "valet-key: $AGENT is poolless -- one config dir, nothing to reconcile"
+    return 0
+  fi
   _prof=$(resolve_pool "${2:-}")
   echo "valet-key: reconciling $(pool_id "$_prof")"
   "$SLOTS" reconcile "$(pool_id "$_prof")" "$(profile_dir "$_prof")" "${3:-}"

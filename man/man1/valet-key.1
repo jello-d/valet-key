@@ -172,6 +172,12 @@ Identity never moves, even between slots of one pool, and never between pools:
 the account is not shared state. Nor are counters and caches, for which a
 merge would be meaningless.
 .IP
+Only a POOLED agent can have this problem at all: a poolless one has a single
+config directory per profile, so there are no copies to diverge, and this verb
+says so rather than reporting a missing pool. A pooled agent that declares no
+.B ADAPTER_MERGE_FILES
+is likewise a clean no-op \(em that is how an agent opts out.
+.IP
 A launch already reconciles the slot it is about to use, so this verb is the
 outward half \(em valet-key
 .BR exec s

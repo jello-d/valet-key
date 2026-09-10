@@ -229,11 +229,30 @@ esac
 # --- an agent that declares no shared files gets none of this ---------------
 # gcloud is poolless and declares nothing, so the whole mechanism must be a
 # clean no-op rather than an error.
+# A POOLLESS agent has one config dir per profile: no copies, so nothing can
+# diverge. It must say so rather than report a missing pool, which would read
+# as drift when it is the design working.
 mkdir -p "$H/.config/gcloud"
-out=$(E sh "$VK" reconcile gcloud personal 2>&1) || true
+rc=0; out=$(E sh "$VK" reconcile gcloud personal 2>&1) || rc=$?
+[ "$rc" = 0 ] || fail "reconcile on a poolless agent failed (rc=$rc)"
 case $out in
-  *"no pool"*|*"declares no shared files"*) ;;
-  *) fail "an agent with no merge files was not a clean no-op: $out" ;;
+  *poolless*) ;;
+  *) fail "a poolless agent was not explained: $out" ;;
+esac
+case $out in
+  *"no pool"*) fail "poolless was reported as a missing pool: $out" ;;
+esac
+
+# A POOLED agent that simply declares no merge files is also a clean no-op --
+# that is how an agent opts out, and it must not look like a failure.
+mkdir -p "$H/.codex"
+E sh "$VK" provision codex personal 2 >/dev/null ||
+  fail "codex provision failed"
+rc=0; out=$(E sh "$VK" reconcile codex personal 2>&1) || rc=$?
+[ "$rc" = 0 ] || fail "reconcile on an agent with no merge files failed"
+case $out in
+  *"no shared files"*) ;;
+  *) fail "an agent with no merge files was not explained: $out" ;;
 esac
 
 pass
