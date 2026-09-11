@@ -163,13 +163,21 @@ than sharing one file: every writer still owns its own, and the worst case is
 a merge that loses a cycle and is redone on the next one rather than a
 corrupted config.
 .IP
-The merge is LAST-WRITER-WINS per project, NOT a union. Trust and allowed
-tools live inside a project entry, so unioning them would mean that revoking
-trust, or removing a tool, gets silently restored from a stale copy on another
-slot \(em a mechanism that resurrects revoked permissions is worse than the
-problem it solves. Entries are taken whole from the newest copy; the union is
-only ACROSS projects, so a new one propagates and an edit (including a
-removal) wins.
+An entry competes only if it CHANGED since the pool last agreed, which the
+reconciler records for itself. File mtime cannot serve as that clock: it says
+when ANY part of a file changed, so a slot with a live session bumping a
+counter becomes "newest" for every project it holds, including ones it has
+never been opened in \(em and its untouched stub would overwrite another
+slot's real grant. Being in a recently-written file is not a claim to know
+anything. Where nobody changed a project, the agreed value stands.
+.IP
+It is NOT a union. Trust and allowed tools live inside a project entry, so
+unioning them would mean that revoking trust, or removing a tool, gets
+silently restored from a stale copy \(em a mechanism that resurrects revoked
+permissions is worse than the problem it solves. A revocation is a change, so
+it competes and wins; entries are taken whole, and the union is only ACROSS
+projects. Only when two members changed the SAME project does mtime break the
+tie, which is the narrow case it is fit for.
 .IP
 Identity never moves, even between slots of one pool, and never between pools:
 the account is not shared state. Nor are counters and caches, for which a
@@ -181,12 +189,18 @@ says so rather than reporting a missing pool. A pooled agent that declares no
 .B ADAPTER_MERGE_FILES
 is likewise a clean no-op \(em that is how an agent opts out.
 .IP
-A launch already reconciles the slot it is about to use, so this verb is the
-outward half \(em valet-key
+A launch reconciles the WHOLE pool, not just the slot it takes \(em which is
+what makes a simultaneous cohort work. Resuming a multiplexer session brings
+every agent up at once, so none can learn from the others during its own
+startup; each converging the entire partition leaves the pool consistent from
+the first launch onward.
+.IP
+This verb is the same operation on demand. It still earns its keep, because
+valet-key
 .BR exec s
-the agent and is therefore never around when a session ends to push what it
-learned to the other slots. Run it from a provisioning pass, a timer, or by
-hand.
+the agent and is therefore never around when a session ends: a pool with no
+launches in it converges only when something asks. Run it from a provisioning
+pass or by hand.
 .TP
 .B valet-key resolve \fR[\fIagent\fR]
 DRY RUN: report what a launch HERE would do, and launch nothing. Prints the

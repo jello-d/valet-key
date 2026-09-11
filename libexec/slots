@@ -297,24 +297,20 @@ partition_members() {   # <base> <pooldir> -- one path per line
 # every member, or into <dst> alone. Quiet and non-fatal: this runs on the
 # launch path, and a launcher that refuses to start an agent because a merge
 # helper had a bad day would be a far worse bug than the one it fixes.
-reconcile() {
+reconcile() {   # <base> <pooldir> [--check]
   [ -n "$MERGE_FILES" ] && [ -n "$MERGE_CMD" ] || return 0
-  _rb=$1; _rp=$2; _rdst=${3:-}
+  _rb=$1; _rp=$2; _rmode=${3:-}
   _members=$(partition_members "$_rb" "$_rp")
+  mkdir -p "$_rp/.reconciled" 2>/dev/null || true
+  _rrc=0
   for _f in $MERGE_FILES; do
-    _srcs=""
-    for _m in $_members; do
-      [ -f "$_m/$_f" ] && _srcs="$_srcs $_m/$_f"
-    done
-    [ -n "$_srcs" ] || continue
-    if [ -n "$_rdst" ]; then _targets=$_rdst; else _targets=$_members; fi
-    for _m in $_targets; do
-      [ -f "$_m/$_f" ] || continue
-      # shellcheck disable=SC2086  # _srcs is a deliberate arg list
-      "$MERGE_CMD" "$_f" "$_m/$_f" $_srcs || true
-    done
+    # ONE invocation for the whole partition. The helper must see every member
+    # at once: it writes the agreed value only after updating them all, and a
+    # per-destination call would advance that record before the rest had it.
+    # shellcheck disable=SC2086  # _members is a deliberate arg list
+    "$MERGE_CMD" $_rmode "$_f" "$_rp/.reconciled/$_f.state" $_members || _rrc=$?
   done
-  return 0
+  return "$_rrc"
 }
 
 # Has anything in the partition been written since this slot was last brought
@@ -336,14 +332,29 @@ needs_reconcile() {   # <base> <pooldir> <slot>
   return 1
 }
 
-# The LAUNCH-PATH pull. We hold the lease, so nothing else is writing this
-# slot; the sources may well be live, which is why the helper skips a copy it
-# cannot parse rather than failing. Gated, and silenced: the caller is about to
-# exec an agent and its stdout is not ours to write on.
+# THE LAUNCH-PATH RECONCILE, and it heals the WHOLE POOL rather than just the
+# slot being leased.
+#
+# That matters for the case this exists to serve: `mux resume` after a reboot
+# brings every session up at once. They all lease within the same second, so
+# none can learn anything from the others during their own startup -- but each
+# one converging the whole partition means the pool is consistent from the
+# first launch onward, and a slot that comes up later inherits it.
+#
+# It writes members that a live session may also be writing. That is safe and
+# deliberate: the value written INCLUDES what we just read from that session's
+# own copy, the replace is atomic so it never sees a torn file, and if it
+# overwrites us from its own cache the next reconcile simply picks that up.
+# Eventually consistent, never corrupt.
+#
+# Gated and silenced: the caller is about to exec an agent, and its stdout is
+# not ours to write on.
 lease_reconcile() {   # <base> <pooldir> <slot>
   needs_reconcile "$1" "$2" "$3" || return 0
-  reconcile "$1" "$2" "$3" >/dev/null 2>&1 || true
-  stamp_reconciled "$2" "$3"
+  reconcile "$1" "$2" >/dev/null 2>&1 || true
+  for _lr in $(partition_members "$1" "$2"); do
+    case "$_lr" in "$2"/slot-*) stamp_reconciled "$2" "$_lr" ;; esac
+  done
   return 0
 }
 
@@ -627,20 +638,7 @@ cmd_reconcile() {
     return 0
   fi
   if [ "$mode" = --check ]; then
-    _behind=0
-    for _f in $MERGE_FILES; do
-      _srcs=""
-      for _m in $(partition_members "$base" "$pd"); do
-        [ -f "$_m/$_f" ] && _srcs="$_srcs $_m/$_f"
-      done
-      [ -n "$_srcs" ] || continue
-      for _m in $(partition_members "$base" "$pd"); do
-        [ -f "$_m/$_f" ] || continue
-        # shellcheck disable=SC2086  # _srcs is a deliberate arg list
-        "$MERGE_CMD" --check "$_f" "$_m/$_f" $_srcs || _behind=$((_behind + 1))
-      done
-    done
-    if [ "$_behind" -eq 0 ]; then
+    if reconcile "$base" "$pd" --check; then
       echo "valet-key-slots: $id -- all copies current"; return 0
     fi
     return 1

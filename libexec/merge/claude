@@ -10,51 +10,65 @@ live. So the same repo has to be trusted again on every slot it has not been
 opened in yet, and a freshly provisioned slot starts knowing nothing.
 
 So: keep the private copies, and RECONCILE them. Safer than sharing an inode,
-because every writer still owns its own file and this only ever runs when no
-session holds the destination.
+because every writer still owns its own file; the worst case is a merge that
+loses a cycle and is redone on the next one, never a corrupted config.
 
 WHAT IT MERGES, AND WHAT IT REFUSES TO. Only `projects`. Everything else in
-the destination is left exactly as found -- oauthAccount and userID above all,
-which are identity and must never move even between slots, and the counters
-and caches, for which a merge would be meaningless.
+each destination is left exactly as found -- oauthAccount and userID above all,
+which are identity and must never move even between slots of one pool, and the
+counters and caches, for which a merge would be meaningless.
 
-THE MERGE RULE IS LAST-WRITER-WINS PER PROJECT, NOT A UNION. Union is the
-intuitive design and the wrong one: `hasTrustDialogAccepted`, `allowedTools`
-and `enabledMcpjsonServers` all live inside a project entry, so unioning them
-would mean that revoking trust, or removing an allowed tool, gets silently
-restored from a stale copy on another slot. A mechanism that resurrects
-revoked permissions is worse than the problem it solves. Entries are taken
-whole, newest file wins, and the union happens only ACROSS project keys -- so
-a new project propagates everywhere, and an edit (including a revocation)
-takes the newest version rather than being combined with an older one.
+WHICH COPY WINS, AND WHY IT IS NOT SIMPLY THE NEWEST FILE. The first version of
+this used file mtime as the clock: newest file wins, per project. That is
+WRONG, and it cost real grants. A file's mtime says when ANY part of it last
+changed, so a busy slot -- one with a live session bumping a counter every few
+seconds -- becomes "newest" for EVERY project it contains, including ones it
+has never been opened in and knows nothing about. Its untouched
+`hasTrustDialogAccepted: false` stub then beat another slot's real grant, and
+trust came back to be re-answered after every reboot.
 
-The clock is file mtime. It is coarse, and two slots editing the SAME project
-within the same second is a coin toss -- which is acceptable, because the loser
-is one project's settings and the next reconcile converges.
+The clock has to be per ENTRY, and the file gives us none. So we keep our own:
+STATE records the value each project converged on last time. A member's entry
+competes only if it DIFFERS from that -- which is precisely "this member
+changed it since we last agreed". An untouched stub is identical to what the
+last merge handed out, so it cannot win. If nobody changed a project, the
+converged value stands, however many times the files around it were rewritten.
+
+That also keeps REVOCATION working, which a union would not: removing trust,
+or removing an allowed tool, is a real change, so it competes and wins. Entries
+are taken whole from the winner; the union is only ACROSS project keys, so a
+new project propagates while an edit replaces rather than accumulates. A
+mechanism that resurrects revoked permissions would be worse than the problem
+it solves.
+
+Only when two members changed the SAME project since the last merge does mtime
+break the tie, which is the narrow case it is actually fit for.
 
 Usage:
-  merge/claude <file> <dst> <src>...     merge srcs into dst (atomically)
-  merge/claude --check <file> <dst> <src>...   exit 1 if dst is behind
+  merge/claude [--check] <file> <state> <memberdir>...
 
-<file> is the basename being reconciled, so one helper can serve several
-files. <src>... is every copy in the partition, INCLUDING dst: dst competes
-on its own mtime like any other, which is what keeps a purely-local edit from
-being clobbered by an older sibling.
+The whole partition is handled in ONE invocation, deliberately: the state must
+be written once, after every member is updated, or the second destination would
+read a state the first had already advanced and mistake unchanged entries for
+new ones.
 
-Exit: 0 ok / current, 1 (--check only) dst would change, 2 error.
+Exit: 0 ok / current, 1 (--check only) some member is behind, 2 error.
 """
 
+import hashlib
 import json
 import os
 import sys
 import tempfile
 
-# The only key reconciled. Deliberately a allowlist, not a denylist: a new
-# top-level key that Claude Code starts writing must not silently become
-# something we copy between config directories.
-RECONCILED = ("projects",)
+# The only key reconciled. Deliberately an allowlist: a new top-level key that
+# Claude Code starts writing must not silently become something we copy
+# between config directories.
+RECONCILED = "projects"
 
 SUPPORTED = (".claude.json",)
+
+GRANT = "hasTrustDialogAccepted"
 
 
 def load(path):
@@ -62,8 +76,8 @@ def load(path):
 
     A source being written right now can be caught half-flushed. Skipping it
     is correct: the copy is transient, its owner will write it again, and the
-    next reconcile picks it up. Failing the whole run over one torn read
-    would make this fragile exactly when the pool is busy.
+    next reconcile picks it up. Failing the whole run over one torn read would
+    make this fragile exactly when the pool is busiest.
     """
     try:
         with open(path, "r") as fh:
@@ -72,35 +86,24 @@ def load(path):
         return None, 0
 
 
-def merged_projects(sources):
-    """{path: entry}, each entry from whichever source last wrote it."""
-    best = {}
-    for path in sources:
-        doc, mtime = load(path)
-        if doc is None:
-            continue
-        projects = doc.get("projects")
-        if not isinstance(projects, dict):
-            continue
-        for key, entry in projects.items():
-            if key not in best or mtime > best[key][0]:
-                best[key] = (mtime, entry)
-    return {k: v for k, (_, v) in best.items()}
+def same(a, b):
+    """Compare two project entries by value, order-insensitively."""
+    return (json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True))
 
 
 def write_atomically(path, doc):
     """Replace <path> in one step, preserving its mode.
 
-    tmp + rename so a reader never sees a partial file: the agent is about to
-    be exec'd against this directory and a truncated config would be a hard
-    failure at the worst moment.
+    tmp + rename so a reader never sees a partial file: an agent may be about
+    to be exec'd against this directory, and a truncated config would be a
+    hard failure at the worst possible moment.
     """
     try:
         mode = os.stat(path).st_mode & 0o777
     except OSError:
         mode = 0o600
-    directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".vk-merge-")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                               prefix=".vk-merge-")
     try:
         with os.fdopen(fd, "w") as fh:
             json.dump(doc, fh, indent=2)
@@ -115,46 +118,83 @@ def write_atomically(path, doc):
         raise
 
 
+def choose(key, candidates, previous, bootstrap):
+    """Pick the winning entry for one project.
+
+    <candidates> is [(mtime, entry)] from members that CHANGED this project
+    since the last merge. Empty means nobody did, so the converged value
+    stands regardless of how often the files were rewritten -- that is the
+    whole point.
+    """
+    if not candidates:
+        return previous.get(key)
+    if bootstrap:
+        # No state yet, so no provenance: we cannot tell a grant from a stub
+        # that was never asked. Prefer the grant. A `true` is a deliberate
+        # human answer, a `false` is usually "never prompted here", and this
+        # runs exactly once per pool -- from the next merge on, provenance
+        # decides and a revocation wins normally.
+        granted = [c for c in candidates if c[1].get(GRANT) is True]
+        if granted:
+            return max(granted, key=lambda c: c[0])[1]
+    return max(candidates, key=lambda c: c[0])[1]
+
+
 def main(argv):
     check = False
     if argv and argv[0] == "--check":
-        check = True
-        argv = argv[1:]
-    if len(argv) < 2:
-        sys.stderr.write(__doc__.split("Usage:", 1)[1])
+        check, argv = True, argv[1:]
+    if len(argv) < 3:
+        sys.stderr.write("usage: merge/claude [--check] <file> <state> "
+                         "<memberdir>...\n")
         return 2
 
-    name, dst, sources = argv[0], argv[1], argv[2:]
+    name, statepath, members = argv[0], argv[1], argv[2:]
     if name not in SUPPORTED:
         sys.stderr.write("merge/claude: cannot reconcile '%s'\n" % name)
         return 2
 
-    current, _ = load(dst)
-    if current is None:
-        # No destination to merge INTO. Not an error: a pool member may have
-        # no copy yet (a slot provisioned before its first launch). Creating
-        # one from siblings would invent the top-level state -- identity,
-        # onboarding, caches -- that this deliberately never touches.
+    state, _ = load(statepath)
+    previous = (state or {}).get("merged", {})
+    bootstrap = state is None
+
+    # Read every member once. A member with no copy is skipped, not invented:
+    # creating one would have to fabricate the identity and onboarding state
+    # this deliberately never touches.
+    docs = {}
+    for d in members:
+        doc, mtime = load(os.path.join(d, name))
+        if doc is not None:
+            docs[d] = (doc, mtime, doc.get(RECONCILED) or {})
+    if not docs:
         return 0
 
-    wanted = dict(current)
-    for key in RECONCILED:
-        if key == "projects":
-            wanted["projects"] = merged_projects(sources)
+    merged = {}
+    for key in {k for _, _, pr in docs.values() for k in pr}:
+        candidates = [(mtime, pr[key]) for _, mtime, pr in docs.values()
+                      if key in pr and not same(pr[key], previous.get(key))]
+        won = choose(key, candidates, previous, bootstrap)
+        if won is not None:
+            merged[key] = won
 
-    if wanted == current:
-        return 0
-    gained = (len(wanted.get("projects", {}))
-              - len(current.get("projects", {})))
+    behind = [d for d, (_, _, pr) in docs.items() if not same(pr, merged)]
     if check:
-        sys.stdout.write("%s is behind (%+d project(s))\n" % (dst, gained))
-        return 1
+        for d in sorted(behind):
+            sys.stdout.write("%s is behind\n" % os.path.join(d, name))
+        return 1 if behind else 0
 
-    write_atomically(dst, wanted)
-    if gained:
-        sys.stdout.write("%s: %+d project(s)\n" % (dst, gained))
-    else:
-        sys.stdout.write("%s: refreshed\n" % dst)
+    for d in sorted(behind):
+        doc = dict(docs[d][0])
+        doc[RECONCILED] = merged
+        write_atomically(os.path.join(d, name), doc)
+        sys.stdout.write("%s: reconciled\n" % os.path.join(d, name))
+
+    # Only now, with every member carrying it, does this become the value we
+    # will treat as "agreed" next time.
+    try:
+        write_atomically(statepath, {"merged": merged})
+    except OSError as exc:
+        sys.stderr.write("merge/claude: could not record state: %s\n" % exc)
     return 0
 
 

@@ -102,6 +102,60 @@ for m in "$P/slot-1" "$P/slot-2" "$P/slot-3" "$P/slot-4" "$H/.claude"; do
     fail "${m##*/}: a removed tool came back"
 done
 
+# --- an UNTOUCHED entry must not beat one that was actually changed ---------
+# This is the regression that sent trust prompts back after every reboot. The
+# first rule here was "newest file wins, per project", and a file's mtime says
+# when ANY part of it changed. A busy slot -- a live session bumping a counter
+# every few seconds -- therefore became "newest" for every project it held,
+# including ones it had never been opened in, and its untouched
+# `hasTrustDialogAccepted: false` stub overwrote another slot's real grant.
+#
+# So an entry competes only if it DIFFERS from what the pool last agreed on.
+# Being in a recently-written file is not a claim to know anything.
+# Converge everyone on "not trusted", and record that as the agreed value.
+setp "$P/slot-1/.claude.json" /reboot no '[]'
+E sh "$VK" reconcile claude personal >/dev/null || fail "reconcile failed"
+
+# One slot is opened there and the human grants trust. NO reconcile yet -- so
+# every other member still holds the agreed `false`, exactly as after a reboot.
+sleep 1.1
+setp "$P/slot-2/.claude.json" /reboot yes '["Bash"]'
+
+# ...and now an UNINVOLVED slot rewrites its file for an unrelated reason (a
+# live session bumping a counter), making it the NEWEST file in the pool while
+# its copy of /reboot is still the stale, agreed `false`.
+sleep 1.1
+python3 -c '
+import json, sys
+f = sys.argv[1]; j = json.load(open(f)); j["numStartups"] = 4321
+json.dump(j, open(f, "w"))' "$P/slot-4/.claude.json"
+
+E sh "$VK" reconcile claude personal >/dev/null || fail "reconcile failed"
+for m in "$P/slot-1" "$P/slot-2" "$P/slot-3" "$P/slot-4" "$H/.claude"; do
+  [ "$(getp "$m/.claude.json" /reboot hasTrustDialogAccepted)" = true ] ||
+    fail "${m##*/}: an untouched stub in the newest file beat a real grant"
+done
+
+# ...and a genuine revocation still wins, because it IS a change.
+sleep 1.1
+setp "$P/slot-3/.claude.json" /reboot no '[]'
+E sh "$VK" reconcile claude personal >/dev/null || fail "reconcile failed"
+for m in "$P/slot-1" "$P/slot-2" "$P/slot-3" "$P/slot-4" "$H/.claude"; do
+  [ "$(getp "$m/.claude.json" /reboot hasTrustDialogAccepted)" = false ] ||
+    fail "${m##*/}: a revocation was ignored once provenance was tracked"
+done
+
+# --- a simultaneous cohort converges the whole pool, not just its own slot --
+# `mux resume` brings every session up at once. None can learn from the others
+# during its own startup, so each launch converges the ENTIRE partition -- that
+# is what makes the pool consistent from the first one onward.
+setp "$P/slot-3/.claude.json" /cohort yes '[]'
+rm -rf "$P"/slot-*/.lease
+E sh "$VK" run claude >/dev/null 2>&1 || fail "launch failed"
+_far=$P/slot-4
+[ "$(getp "$_far/.claude.json" /cohort hasTrustDialogAccepted)" = true ] ||
+  fail "a launch reconciled only its own slot, not the pool"
+
 # --- identity and per-directory state stay put ------------------------------
 # oauthAccount IS the account. Even within one pool it is not something to
 # copy around, and across pools it would be a leak. Counters are per-copy and
