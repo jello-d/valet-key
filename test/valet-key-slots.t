@@ -96,6 +96,30 @@ r=$(sh "$SLOTS" lease "$ID" "$B" "$h3")
 [ "$r" = "$b" ] || fail "dead-holder slot not reclaimed"
 kill "$h1" "$h3" 2>/dev/null; wait 2>/dev/null || true
 
+# --- a claim in flight is BUSY, never stolen --------------------------------
+# Claiming is mkdir-then-write-pid, so there is an instant where the lock
+# exists and the pid file does not. Reading that as "no holder recorded, so it
+# must be stale" would let a second leaser tear down a lock the first had just
+# taken and hand both of them the same slot -- the token race the pool exists
+# to remove. An absent or empty pid means busy, and busy means leave it alone.
+MF=$T/midflight; mkdir -p "$MF"
+VALET_KEY_POOL_ROOT=$MF sh "$SLOTS" provision "$ID" "$B" 2 >/dev/null
+mkdir -p "$MF/$ID/slot-1/.lease"            # lock taken, pid not yet written
+hm=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$MF sh "$SLOTS" lease "$ID" "$B" "$hm" 2>/dev/null)
+[ "$got" != "$MF/$ID/slot-1" ] ||
+  fail "a claim in flight (no pid recorded) was stolen"
+[ "$got" = "$MF/$ID/slot-2" ] || fail "the leaser did not move on: ${got##*/}"
+kill "$hm" 2>/dev/null || true; wait "$hm" 2>/dev/null || true
+
+# An EMPTY pid file is the same state a moment later, and reads the same way.
+: > "$MF/$ID/slot-1/.lease/pid"
+rm -rf "$MF/$ID/slot-2/.lease"
+hm=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$MF sh "$SLOTS" lease "$ID" "$B" "$hm" 2>/dev/null)
+[ "$got" != "$MF/$ID/slot-1" ] || fail "an empty pid file was treated as stale"
+kill "$hm" 2>/dev/null || true; wait "$hm" 2>/dev/null || true
+
 # --- which slot wins: WARMTH first, position only as the tiebreak -----------
 # A COLD slot at a LOWER index must not beat a WARM one further along. This is
 # the case the first version of this test missed, and it cost a real login: a
@@ -150,6 +174,39 @@ got=$(VALET_KEY_POOL_ROOT=$PR sh "$SLOTS" lease "$ID" "$B" "$hp1" 2>/dev/null)
   fail "lease skipped a warm reclaimable slot for a cold one: $got"
 kill "$hp1" 2>/dev/null || true; wait "$hp1" 2>/dev/null || true
 
+# --- reclaim is GATED on the pool mutex, deterministically ------------------
+# The stress test below can only ever catch the race probabilistically: the
+# window between removing a dead lock and creating ours is microseconds wide.
+# So the PROPERTY the fix rests on is tested directly instead -- recycling
+# happens only while holding the pool's reclaim mutex.
+#
+# Every slot dead-held and none free, with the mutex held by a LIVE process:
+# a leaser must NOT recycle anything. It waits, gives up, finds no free slot,
+# and overflows to the shared base. If it comes back with a slot, reclaim
+# happened outside the mutex and the serialisation is gone.
+GM=$T/gated; mkdir -p "$GM"
+VALET_KEY_POOL_ROOT=$GM sh "$SLOTS" provision "$ID" "$B" 2 >/dev/null
+for _s in "$GM/$ID"/slot-*; do
+  mkdir -p "$_s/.lease"; echo 999999 > "$_s/.lease/pid"   # dead holders
+done
+hg=$(holder)                                  # a LIVE pid to own the mutex
+mkdir -p "$GM/$ID/.reclaim"; echo "$hg" > "$GM/$ID/.reclaim/pid"
+hg2=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$GM sh "$SLOTS" lease "$ID" "$B" "$hg2" 2>/dev/null)
+[ "$got" = "$B" ] ||
+  fail "a slot was recycled while the reclaim mutex was held: ${got##*/}"
+
+# ...and a mutex whose owner is GONE must not wedge the pool forever: the next
+# leaser breaks it and recycles normally.
+kill "$hg" 2>/dev/null || true; wait "$hg" 2>/dev/null || true
+echo 999999 > "$GM/$ID/.reclaim/pid"          # owner recorded but dead
+got=$(VALET_KEY_POOL_ROOT=$GM sh "$SLOTS" lease "$ID" "$B" "$hg2" 2>/dev/null)
+case $got in
+  "$GM/$ID"/slot-*) ;;
+  *) fail "a stale reclaim mutex wedged the pool: $got" ;;
+esac
+kill "$hg2" 2>/dev/null || true; wait "$hg2" 2>/dev/null || true
+
 # --- concurrent reclaim: two leasers must never get the same slot ------------
 # The state that triggers it is ordinary, not exotic: every slot held by a pid
 # that died (a reboot, a killed terminal), and several sessions starting at
@@ -175,7 +232,7 @@ while [ "$_round" -lt 12 ]; do
     mkdir -p "$_s/.lease"; echo 999999 > "$_s/.lease/pid"
   done
   _i=0
-  while [ "$_i" -lt 3 ]; do               # 3 leasers, 3 slots: all reclaimed
+  while [ "$_i" -lt 5 ]; do               # MORE leasers than slots: contention
     _i=$((_i + 1))
     _h=$(holder); echo "$_h" >> "$T/holders"
     VALET_KEY_POOL_ROOT=$CP sh "$SLOTS" lease "$ID" "$B" "$_h" \
@@ -186,10 +243,10 @@ while [ "$_round" -lt 12 ]; do
   _dupe=$(cat "$T/cout"/* | grep 'slot-' | sort | uniq -d)
   [ -z "$_dupe" ] ||
     fail "round $_round: two leasers were handed the same slot: $_dupe"
-  # Every leaser must get a real slot: with as many dead-held slots as
-  # leasers, falling back to the shared base would mean a reclaim was lost.
+  # Every slot must be handed out exactly once; the surplus leasers overflow
+  # to the shared base. Fewer than 3 means a reclaim was lost.
   _got=$(cat "$T/cout"/* | grep -c 'slot-')
-  [ "$_got" = 3 ] || fail "round $_round: only $_got of 3 leasers got a slot"
+  [ "$_got" = 3 ] || fail "round $_round: $_got of 3 slots were reclaimed"
 done
 # ...and the reclaim leaves nothing behind that a later run has to reason about.
 for _s in "$CP/$ID"/slot-*; do

@@ -224,6 +224,28 @@ mkhook "$GD/60-no" '#!/bin/sh
 exit 1'
 [ "$(guard_rc)" = 1 ] || fail "a warn masked a refusal"
 
+# --- a NON-EXECUTABLE file in guard.d is ignored, not run ------------------
+# It cannot be executed, so running it anyway fails -- and a guard that fails
+# counts as a refusal, which would block every launch on the box because
+# someone dropped a file in and forgot the chmod. Skipping it is the only safe
+# reading; `doctor` is where it gets reported, loudly, as installed-but-inert.
+rm -f "$PD"/* "$GD"/*
+printf '#!/bin/sh\nexit 1\n' > "$GD/50-noexec"       # deliberately not +x
+[ "$(guard_rc)" = 0 ] ||
+  fail "a non-executable file in guard.d refused the launch"
+chmod +x "$GD/50-noexec"
+[ "$(guard_rc)" = 1 ] || fail "the same file, made executable, did not refuse"
+rm -f "$GD"/*
+
+# ...and the same on the selection side: an unrunnable file must not be
+# mistaken for a hook that abstained, it must simply not be there.
+printf '#!/bin/sh\necho ignored\n' > "$PD/50-noexec"
+[ "$(resolve)" = personal ] ||
+  fail "a non-executable file in profile.d was consulted: $(resolve)"
+chmod +x "$PD/50-noexec"
+[ "$(resolve)" = ignored ] || fail "the same file, made executable, was skipped"
+rm -f "$PD"/*
+
 # --- the seams are INDEPENDENT ---------------------------------------------
 # A veto-only integrator writes one file in guard.d and says nothing about
 # profiles; that must not affect selection at all.
