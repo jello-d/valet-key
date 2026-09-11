@@ -52,7 +52,10 @@ coherence (proceed, warn, or refuse) before launching;
 .B lease
 a private credential slot from the profile's pool (pooled agents only; a
 poolless agent uses the profile's directory directly), so concurrent sessions
-never share one rotating refresh token;
+never share one rotating refresh token. A WARM slot \(em one that already
+holds a login \(em is preferred over a cold one, with slot order breaking
+ties: the pool exists to keep you signed in, so handing out a cold slot while
+a warm one sits idle would cost a login for nothing;
 .IP 4. 3
 .B exec
 the real agent with the slot as its config directory.

@@ -383,63 +383,87 @@ reclaim_lock() {   # <pooldir>
 }
 reclaim_unlock() { rm -rf "$1/.reclaim"; }
 
+# Claim the first slot matching the filters. Echoes the slot and returns 0, or
+# returns 1 if none matched.
+#
+#   <warm> 1 = only slots that already hold a login, 0 = only cold ones
+#   <reclaim> 1 = may recycle a slot whose recorded holder is dead
+#
+# Splitting warm from cold is the whole point: see cmd_lease.
+claim_pass() {   # <base> <pooldir> <holder> <warm> <reclaim>
+  _cb=$1; _cp=$2; _ch=$3; _cw=$4; _cr=$5
+  for slot in "$_cp"/slot-*; do
+    is_slot "$slot" || continue
+    if [ "$_cw" = 1 ]; then
+      [ -s "$slot/$CRED_FILE" ] || continue
+    else
+      [ -s "$slot/$CRED_FILE" ] && continue
+    fi
+    lock=$slot/.lease
+    if mkdir "$lock" 2>/dev/null; then
+      echo "$_ch" > "$lock/pid"
+      seed_slot "$_cb" "$slot"
+      lease_reconcile "$_cb" "$_cp" "$slot"
+      printf '%s\n' "$slot"; return 0
+    fi
+    [ "$_cr" = 1 ] || continue
+    # Occupied. An empty or absent pid means a claim is mid-flight, which is
+    # busy, not stale: never steal one.
+    hp=$(cat "$lock/pid" 2>/dev/null || true)
+    [ -n "$hp" ] || continue
+    pid_live "$hp" && continue
+    rm -rf "$lock"
+    if mkdir "$lock" 2>/dev/null; then
+      echo "$_ch" > "$lock/pid"
+      seed_slot "$_cb" "$slot"
+      lease_reconcile "$_cb" "$_cp" "$slot"
+      printf '%s\n' "$slot"; return 0
+    fi
+  done
+  return 1
+}
+
 cmd_lease() {
   id=${1:?pool id required}; base=${2:?base dir required}; holder=${3:-$$}
   SLOTS_QUIET=1                        # self-heal quietly on the hot path
   pd=$(pool_dir "$id")
   [ -d "$pd" ] || { echo "$base"; return 0; }   # no pool -> shared base
 
-  # ONE ordered pass: the first slot that is free, or whose recorded holder is
-  # dead. The order is the policy -- reusing an earlier slot, which is usually
-  # already WARM, beats skipping ahead to a cold one and making the user sign
-  # in again for nothing.
+  # WARM SLOTS FIRST, then index order within each group.
   #
-  # It runs under the pool's reclaim mutex because recycling is
-  # INSPECT-then-MODIFY: read a pid, judge it, act on it. Making the
-  # individual steps atomic does not make that safe -- two leasers can read the
-  # same dead pid, and the second then tears down the lock the first just took.
-  # That really happened, and it put two live sessions on one credentials file:
-  # the exact race the pool exists to remove, reintroduced by the code meant to
+  # Index order alone is not enough, and the difference is a login prompt. With
+  # slot-7 cold and slot-9 warm both free, taking the lowest index hands the
+  # session a slot with no credentials and makes someone sign in while a warm
+  # slot sits idle beside it. That happened. The pool's whole purpose is to
+  # keep you logged in, so warmth outranks position; position only breaks ties.
+  #
+  # Both passes run inside ONE hold of the reclaim mutex, because recycling is
+  # INSPECT-then-MODIFY: read a pid, judge it, act on it. Making the individual
+  # steps atomic does not make that safe -- two leasers can read the same dead
+  # pid, and the second then tears down the lock the first just took. That
+  # really happened, and it put two live sessions on one credentials file: the
+  # exact race the pool exists to remove, reintroduced by the code meant to
   # recycle it. Its trigger is not exotic either -- a reboot, then several
   # sessions starting at once with every recorded holder dead.
   if reclaim_lock "$pd"; then
-    for slot in "$pd"/slot-*; do
-      is_slot "$slot" || continue
-      lock=$slot/.lease
-      if mkdir "$lock" 2>/dev/null; then
-        echo "$holder" > "$lock/pid"
-        seed_slot "$base" "$slot"
-        lease_reconcile "$base" "$pd" "$slot"
-        reclaim_unlock "$pd"; echo "$slot"; return 0
-      fi
-      # Occupied. An empty or absent pid means a claim is mid-flight, which is
-      # busy, not stale: never steal one.
-      hp=$(cat "$lock/pid" 2>/dev/null || true)
-      [ -n "$hp" ] || continue
-      pid_live "$hp" && continue
-      rm -rf "$lock"
-      if mkdir "$lock" 2>/dev/null; then
-        echo "$holder" > "$lock/pid"
-        seed_slot "$base" "$slot"
-        lease_reconcile "$base" "$pd" "$slot"
-        reclaim_unlock "$pd"; echo "$slot"; return 0
-      fi
-    done
+    if _got=$(claim_pass "$base" "$pd" "$holder" 1 1); then
+      reclaim_unlock "$pd"; printf '%s\n' "$_got"; return 0
+    fi
+    if _got=$(claim_pass "$base" "$pd" "$holder" 0 1); then
+      reclaim_unlock "$pd"; printf '%s\n' "$_got"; return 0
+    fi
     reclaim_unlock "$pd"
   else
     # Could not serialize within the wait. Claiming a genuinely FREE slot is
     # still safe without the mutex -- mkdir is atomic and self-exclusive, and
-    # only RECYCLING needs coordination -- so try that before giving up and
-    # sharing the base.
-    for slot in "$pd"/slot-*; do
-      is_slot "$slot" || continue
-      if mkdir "$slot/.lease" 2>/dev/null; then
-        echo "$holder" > "$slot/.lease/pid"
-        seed_slot "$base" "$slot"
-        lease_reconcile "$base" "$pd" "$slot"
-        echo "$slot"; return 0
-      fi
-    done
+    # only RECYCLING needs coordination -- so try that, still warm-first,
+    # before giving up and sharing the base.
+    if _got=$(claim_pass "$base" "$pd" "$holder" 1 0); then
+      printf '%s\n' "$_got"; return 0
+    fi
+    if _got=$(claim_pass "$base" "$pd" "$holder" 0 0); then
+      printf '%s\n' "$_got"; return 0
+    fi
   fi
   warn "all slots leased for $id; using shared base (races)"
   echo "$base"

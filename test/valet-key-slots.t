@@ -96,7 +96,42 @@ r=$(sh "$SLOTS" lease "$ID" "$B" "$h3")
 [ "$r" = "$b" ] || fail "dead-holder slot not reclaimed"
 kill "$h1" "$h3" 2>/dev/null; wait 2>/dev/null || true
 
-# --- which slot wins: a reclaimable WARM one beats a free COLD one -----------
+# --- which slot wins: WARMTH first, position only as the tiebreak -----------
+# A COLD slot at a LOWER index must not beat a WARM one further along. This is
+# the case the first version of this test missed, and it cost a real login: a
+# session took cold slot-7 while warm slot-9 sat free beside it, because the
+# scan was ordered by index alone. The pool exists to keep you logged in, so
+# warmth outranks position.
+WP=$T/warmpref; mkdir -p "$WP"
+VALET_KEY_POOL_ROOT=$WP sh "$SLOTS" provision "$ID" "$B" 3 >/dev/null
+printf '{"claudeAiOauth":{"refreshToken":"r"}}\n' \
+  > "$WP/$ID/slot-3/.credentials.json"      # only the LAST slot is warm
+hw=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$WP sh "$SLOTS" lease "$ID" "$B" "$hw" 2>/dev/null)
+[ "$got" = "$WP/$ID/slot-3" ] ||
+  fail "lease took a cold low-index slot over a warm one: ${got##*/}"
+kill "$hw" 2>/dev/null || true; wait "$hw" 2>/dev/null || true
+
+# ...and the same when the warm slot has to be RECLAIMED rather than being
+# free: a dead holder on a warm slot still beats a free cold one.
+rm -rf "$WP/$ID"/slot-*/.lease
+mkdir -p "$WP/$ID/slot-3/.lease"; echo 999999 > "$WP/$ID/slot-3/.lease/pid"
+hw=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$WP sh "$SLOTS" lease "$ID" "$B" "$hw" 2>/dev/null)
+[ "$got" = "$WP/$ID/slot-3" ] ||
+  fail "a reclaimable WARM slot lost to a free cold one: ${got##*/}"
+kill "$hw" 2>/dev/null || true; wait "$hw" 2>/dev/null || true
+
+# With warmth equal, position decides -- so the pool fills predictably rather
+# than scattering across slots.
+rm -rf "$WP/$ID"/slot-*/.lease "$WP/$ID/slot-3/.credentials.json"
+hw=$(holder); sleep 0.2
+got=$(VALET_KEY_POOL_ROOT=$WP sh "$SLOTS" lease "$ID" "$B" "$hw" 2>/dev/null)
+[ "$got" = "$WP/$ID/slot-1" ] ||
+  fail "with all slots cold, index order did not decide: ${got##*/}"
+kill "$hw" 2>/dev/null || true; wait "$hw" 2>/dev/null || true
+
+# --- and a reclaimable WARM one still beats a free COLD one -----------------
 # The scan takes the first slot that is free OR reclaimable, in order, and
 # that ordering is the policy rather than an accident. Skipping ahead to an
 # untouched slot instead of recycling an earlier one that already holds a

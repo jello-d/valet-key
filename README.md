@@ -151,6 +151,8 @@ The pool is the heart of it:
   every session at once. Anything else a slot writes is simply born there.
 - **Lazy login.** Slots ship cold. The first session to reach a cold slot logs
   in once; it's warm forever after. You pay only for the concurrency you use.
+  A launch prefers a **warm** slot over a cold one, so you're only asked to
+  sign in when every warm slot is genuinely busy.
 - **Automatic reclaim.** A lease is held by the session's PID and freed when
   that process ends. A dead holder is reclaimed on the next lease, guarded by a
   liveness and command-name check so PID reuse can't steal a live slot.
