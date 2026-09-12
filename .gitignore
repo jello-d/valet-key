@@ -1,2 +1,4 @@
 # Local dev context for an AI assistant: kept on disk, never in the public repo.
 CLAUDE.md
+CLAUDE.local.md
+.claude/
