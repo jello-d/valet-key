@@ -34,7 +34,12 @@ sh "$SLOTS" provision "$ID" "$B" 2 >/dev/null || fail "provision failed"
 [ -f "$P/slot-1/.claude.json" ] && [ ! -L "$P/slot-1/.claude.json" ] \
   || fail ".claude.json not a seeded real file"
 [ -e "$P/slot-1/.credentials.json" ] && fail "credentials leaked to slot"
-[ -e "$P/slot-1/history.jsonl" ] && fail "private file linked into slot"
+# history.jsonl is SHARED, not private: it is append-only, so concurrent
+# writers cannot corrupt it, and leaving it per-slot fragments prompt recall
+# into a different past per slot.
+[ -L "$P/slot-1/history.jsonl" ] || fail "history.jsonl was not shared"
+[ "$(readlink "$P/slot-1/history.jsonl")" = "$B/history.jsonl" ] ||
+  fail "history.jsonl points somewhere other than the base"
 
 # pools / counts: the machine-readable enumeration the engine's check + doctor
 # drive. Post-provision the two slots are cold and unleased.
@@ -52,6 +57,82 @@ rmdir "$B/$LK"
 ln -s "$B/$LK" "$P/slot-1/$LK"                    # stale shared link (dangling)
 sh "$SLOTS" sync "$ID" "$B" >/dev/null 2>&1 || fail "sync healing lock failed"
 [ -L "$P/slot-1/$LK" ] && fail "stale lock symlink not healed"
+
+# --- ADOPTION: a file that used to be private is folded in, not discarded ----
+# When history.jsonl moved from private-per-slot to shared, every existing slot
+# already held a real copy with records nothing else had -- 754 prompts on the
+# pool this was written for. link_into refuses to clobber a real file, which is
+# right, so without adoption the migration would either lose them or leave ten
+# drift warnings and the fragmentation intact forever.
+AD=$T/adopt; ADB=$T/adoptbase; mkdir -p "$ADB"
+printf '{"timestamp":9,"display":"from-base"}\n' > "$ADB/history.jsonl"
+printf '{}\n' > "$ADB/.claude.json"
+printf '{"theme":"base"}\n' > "$ADB/settings.json"
+export VALET_KEY_MERGE_CMD=$HERE/libexec/merge/claude
+VALET_KEY_POOL_ROOT=$AD sh "$SLOTS" provision "$ID" "$ADB" 2 >/dev/null
+# A slot as it would look BEFORE the change: a real, private copy.
+rm -f "$AD/$ID/slot-1/history.jsonl"
+printf '{"timestamp":2,"display":"only-in-slot"}\n' \
+  > "$AD/$ID/slot-1/history.jsonl"
+VALET_KEY_POOL_ROOT=$AD sh "$SLOTS" sync "$ID" "$ADB" >/dev/null 2>&1
+
+[ -L "$AD/$ID/slot-1/history.jsonl" ] ||
+  fail "an adopted file was not linked to the shared copy afterwards"
+grep -q only-in-slot "$ADB/history.jsonl" ||
+  fail "adoption DISCARDED the records only the slot had"
+grep -q from-base "$ADB/history.jsonl" ||
+  fail "adoption lost what the shared copy already held"
+# ...in TIMESTAMP order, so recall reads as one history rather than two
+# spliced together. The slot's record is older than the base's, so file order
+# and timestamp order disagree -- without sorting, the base's would come first.
+[ "$(head -1 "$ADB/history.jsonl" | grep -c only-in-slot)" = 1 ] ||
+  fail "the adopted records were not merged in timestamp order"
+
+# Idempotent: syncing again must not duplicate anything.
+_n=$(grep -c . "$ADB/history.jsonl")
+VALET_KEY_POOL_ROOT=$AD sh "$SLOTS" sync "$ID" "$ADB" >/dev/null 2>&1
+[ "$(grep -c . "$ADB/history.jsonl")" = "$_n" ] ||
+  fail "a second sync duplicated the adopted records"
+
+# A file that CANNOT be safely unioned is never adopted. settings.json is a
+# document, not a log: merging two versions of it means nothing, so a real one
+# is left alone and reported as drift, exactly as before.
+rm -f "$AD/$ID/slot-2/settings.json"
+printf '{"theme":"mine"}\n' > "$AD/$ID/slot-2/settings.json"
+VALET_KEY_POOL_ROOT=$AD sh "$SLOTS" sync "$ID" "$ADB" 2>&1 | grep -q drift ||
+  fail "a non-adoptable real file was silently adopted instead of reported"
+_s2=$AD/$ID/slot-2/settings.json
+[ -f "$_s2" ] && [ ! -L "$_s2" ] ||
+  fail "a non-adoptable real file was replaced by a link"
+unset VALET_KEY_MERGE_CMD
+
+# --- SHARING: concurrent appends from two sessions both survive -------------
+# The reason this file can be shared at all. Appends do not conflict, so two
+# sessions writing at once cannot lose each other's prompts -- which a
+# read-modify-write document could not promise.
+SH=$T/shared; SHB=$T/sharedbase; mkdir -p "$SHB"
+printf '{}\n' > "$SHB/.claude.json"; : > "$SHB/history.jsonl"
+VALET_KEY_POOL_ROOT=$SH sh "$SLOTS" provision "$ID" "$SHB" 2 >/dev/null
+_i=0
+while [ "$_i" -lt 40 ]; do
+  _i=$((_i + 1))
+  printf '{"timestamp":%s,"display":"one"}\n' "$_i" \
+    >> "$SH/$ID/slot-1/history.jsonl" &
+  printf '{"timestamp":%s,"display":"two"}\n' "$_i" \
+    >> "$SH/$ID/slot-2/history.jsonl" &
+done
+wait
+[ "$(grep -c . "$SHB/history.jsonl")" = 80 ] ||
+  fail "concurrent appends lost entries: $(grep -c . "$SHB/history.jsonl")/80"
+_torn=$(python3 -c '
+import json, sys
+bad = 0
+for l in open(sys.argv[1]):
+    if not l.strip(): continue
+    try: json.loads(l)
+    except Exception: bad += 1
+print(bad)' "$SHB/history.jsonl")
+[ "$_torn" = 0 ] || fail "concurrent appends interleaved: $_torn torn lines"
 
 # --- a <slot>.lock sibling is NOT a slot -------------------------------------
 # Found live: the agent creates its own lock directory next to the slot it is

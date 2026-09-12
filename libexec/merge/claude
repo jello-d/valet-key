@@ -68,6 +68,14 @@ RECONCILED = "projects"
 
 SUPPORTED = (".claude.json",)
 
+# Files that can be ADOPTED: folded out of a private per-slot copy into the
+# shared one, without losing anything. Only an APPEND-ONLY log qualifies --
+# its records accumulate and are never rewritten, so a union of two copies is
+# exactly their combined history. A read-modify-write document like
+# .claude.json emphatically does not: unioning two versions of it would mean
+# nothing coherent.
+ADOPTABLE = ("history.jsonl",)
+
 GRANT = "hasTrustDialogAccepted"
 
 
@@ -140,8 +148,67 @@ def choose(key, candidates, previous, bootstrap):
     return max(candidates, key=lambda c: c[0])[1]
 
 
+def adopt(name, dst, src):
+    """Fold <src> into <dst>, losing nothing, and leave <dst> ordered.
+
+    The migration path for a file moving from private-per-slot to shared. The
+    slot's copy holds records NOTHING else has -- 754 prompts on the pool this
+    was written for -- so it is merged into the shared file, never discarded.
+    Idempotent: adopting twice is adopting once, because the union dedupes.
+    """
+    if name not in ADOPTABLE:
+        return 2
+    seen, out = set(), []
+    for path in (dst, src):
+        try:
+            fh = open(path, "r")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    key = json.dumps(json.loads(line), sort_keys=True)
+                except ValueError:
+                    continue          # a torn line is dropped, not fatal
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(json.loads(line))
+    if not out:
+        return 0
+    # Timestamp order, so recall reads as one history rather than as two
+    # spliced together.
+    out.sort(key=lambda j: j.get("timestamp") or 0)
+    body = "".join(json.dumps(j) + "\n" for j in out)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst) or ".",
+                               prefix=".vk-adopt-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(body)
+        try:
+            os.chmod(tmp, os.stat(dst).st_mode & 0o777)
+        except OSError:
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, dst)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return 0
+
+
 def main(argv):
     check = False
+    if argv and argv[0] == "--adopt":
+        if len(argv) != 4:
+            sys.stderr.write("usage: merge/claude --adopt <file> <dst> <src>\n")
+            return 2
+        return adopt(argv[1], argv[2], argv[3])
     if argv and argv[0] == "--check":
         check, argv = True, argv[1:]
     if len(argv) < 3:

@@ -734,7 +734,13 @@ Each slot is a thin view of that profile's base config: subdirectories and the
 adapter's
 .B ADAPTER_STATIC_FILES
 are SYMLINKS back to the base, so work done in a slot lands in the real
-account; the
+account \(em that set includes an APPEND-ONLY log such as
+.IR history.jsonl ,
+because the rule for sharing is not "who writes it" but "can concurrent
+writers corrupt it", and appends do not conflict. A file moving from private
+to shared is ADOPTED on the next provision or sync: the slot's copy is folded
+into the shared one before the link is made, so nothing it alone held is lost.
+The
 .B ADAPTER_SEED_FILES
 are private copies carrying no token; the
 .B ADAPTER_CRED_FILE

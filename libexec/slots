@@ -15,7 +15,9 @@
 #
 # What is shared vs private:
 #   - directories                : DIR SYMLINK to base (app writes inside them).
-#   - the STATIC files           : FILE SYMLINK to base (user-edited, ~stable).
+#   - the STATIC files           : FILE SYMLINK to base. Either user-edited and
+#                                  ~stable, or an APPEND-ONLY log -- appends do
+#                                  not conflict, so sharing one is safe.
 #   - the SEED files             : private copy, made ONCE if absent.
 #   - the CRED file ($CRED_FILE) : PRIVATE, never seeded -- isolation target.
 #   - *.lock, every other file   : private, born in-slot.
@@ -68,7 +70,7 @@ STALE_DAYS=${VALET_KEY_SLOT_STALE_DAYS:-7}
 
 # Per-agent file policy (the adapter overrides these; defaults are Claude Code).
 CRED_FILE=${VALET_KEY_CRED_FILE:-.credentials.json}     # the isolation target
-_static='settings.json settings.local.json CLAUDE.md'
+_static='settings.json settings.local.json CLAUDE.md history.jsonl'
 STATIC_FILES=${VALET_KEY_STATIC_FILES:-$_static}        # shared by symlink
 SEED_FILES=${VALET_KEY_SEED_FILES:-.claude.json}      # private copy, not a link
 
@@ -120,6 +122,9 @@ link_into() {
 # symlink, the seed files copied once, the cred file and locks left private.
 seed_slot() {
   base=$1; slot=$2
+  # FIRST, so the link pass below never meets a real file it has to complain
+  # about and adoption has to undo a moment later.
+  adopt_static "$base" "$slot"
   for e in "$base"/* "$base"/.*; do
     [ -e "$e" ] || continue
     b=${e##*/}
@@ -150,6 +155,28 @@ seed_slot() {
     if [ -L "$lk" ]; then rm -f "$lk"; fi
   done
   return 0     # unmatched *.lock glob leaves a false status; never abort here
+}
+
+# A file that USED to be private and is now SHARED leaves a real copy sitting
+# where the symlink belongs. link_into refuses to clobber that, correctly --
+# the copy holds records nothing else has. So fold it into the base first, then
+# link, and the migration loses nothing.
+#
+# Only the agent's helper knows whether a given file can be folded at all: an
+# APPEND-ONLY log can (its records accumulate, so a union is their combined
+# history), a read-modify-write document cannot. When it declines, or there is
+# no helper, nothing happens and link_into reports the drift as before -- the
+# safe direction.
+adopt_static() {   # <base> <slot>
+  [ -n "$MERGE_CMD" ] || return 0
+  for _as in $STATIC_FILES; do
+    [ -f "$2/$_as" ] && [ ! -L "$2/$_as" ] || continue
+    "$MERGE_CMD" --adopt "$_as" "$1/$_as" "$2/$_as" >/dev/null 2>&1 || continue
+    rm -f "$2/$_as"
+    link_into "$1/$_as" "$2/$_as"
+    warn "adopted $_as from ${2##*/} into the shared copy"
+  done
+  return 0
 }
 
 # mtime (epoch) of a path, or 0. A cred file's mtime IS its last rotation time.

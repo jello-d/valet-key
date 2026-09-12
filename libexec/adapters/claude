@@ -11,7 +11,18 @@ ADAPTER_SLOTS=1                    # Claude's OAuth refresh token rotates
 
 # Slot file policy (see libexec/slots). Claude Code specifics.
 ADAPTER_CRED_FILE=.credentials.json
-ADAPTER_STATIC_FILES='settings.json settings.local.json CLAUDE.md'
+# history.jsonl is the PROMPT-RECALL log, and it is shared rather than private
+# despite being agent-written. The rule for that split is not "who writes it"
+# but "can concurrent writers corrupt it" -- and an APPEND-ONLY log is the one
+# agent-written shape where they cannot, because appends do not conflict.
+# Verified on this agent: writes land in place on the same inode, one write()
+# per entry, largest entry well under PIPE_BUF.
+#
+# Left private it fragments: each slot recalls only what it happened to type,
+# so up-arrow returns a different past depending on which slot you drew. That
+# is a side effect of pooling, and sharing the file removes it exactly --
+# restoring the one-file behaviour you would have without a pool.
+ADAPTER_STATIC_FILES='settings.json settings.local.json CLAUDE.md history.jsonl'
 ADAPTER_SEED_FILES=.claude.json
 ADAPTER_PROC_MATCH=claude          # cmdline match for the dead-slot reclaim
 # Files that are agent-written (so they cannot be shared by symlink) but whose

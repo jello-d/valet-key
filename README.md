@@ -144,8 +144,12 @@ $ claude
 The pool is the heart of it:
 
 - **Slots share state, own their login.** Every slot symlinks the account's
-  directories (projects, plugins, ...) and its user-edited settings files back
-  to the real config, so work done in a slot lands in the real account. The
+  directories (projects, plugins, ...), its user-edited settings, and its
+  append-only prompt history back to the real config, so work done in a slot
+  lands in the real account — and up-arrow recall is the same from every slot
+  rather than a different past per slot. Sharing is decided by *can concurrent
+  writers corrupt it*, not by who writes it: an append-only log qualifies
+  because appends don't conflict. The
   credentials file is never shared — that is the isolation target — and neither
   are runtime lock files, which have to be per-slot or a stalled lock wedges
   every session at once. Anything else a slot writes is simply born there.

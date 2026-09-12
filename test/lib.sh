@@ -29,6 +29,15 @@ harness_init() {   # <name>
   HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
   T=$(mktemp -d)
   trap 'rm -rf "$T"' EXIT INT TERM
+  # SCRUB the inherited valet-key environment. This is not belt-and-braces: a
+  # valet-key-launched agent exports the LIVE adapter's file policy
+  # (VALET_KEY_STATIC_FILES and friends), so running the suite from inside one
+  # handed the code under test the box's policy instead of its own defaults --
+  # and the result depended on what launched the test. It masked a real change
+  # for exactly as long as it took to notice.
+  for _hv in $(env | sed -n 's/^\(VALET_KEY_[A-Z_]*\)=.*/\1/p'); do
+    unset "$_hv"
+  done
 }
 pass() { printf 'ok   %s%s\n' "$TEST_NAME" "${1:+ ($1)}"; }
 fail() { printf 'FAIL %s: %s\n' "$TEST_NAME" "$1" >&2; exit 1; }
