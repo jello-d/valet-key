@@ -135,11 +135,17 @@ login-reminder banner.
 .B valet-key check \fR[\fIagent\fR " [" \fIprofile\fR "]]"
 Audit one pool, or with no argument the whole provisioned setup (every pool).
 Reports slot / warm / leased counts and exits non-zero on structural drift: a
-missing pool, a dangling shared link, or a slot count that no longer matches
-the
+missing pool, a dangling shared link, a pool SMALLER than the
 .I N
 .B provision
-was last asked for. This is the declarative drift audit; see
+was last asked for, or a surplus slot that provision would have removed.
+.IP
+A surplus slot that is WARM or IN USE is not drift: provision keeps those
+deliberately rather than discard a login or evict a live session, and calling
+the state it chose a failure would make the tool disagree with itself and
+raise a red line that re-running provisioning could not clear. What
+.B check
+audits is what provisioning owns and CAN re-fix. See
 .B doctor
 for the environmental one.
 .TP

@@ -460,12 +460,36 @@ out=$(PV provision 2 2>&1)
 [ -s "$CV/$ID/slot-4/.credentials.json" ] ||
   fail "provision discarded a warm slot's login to hit the target"
 printf '%s' "$out" | grep -qi 'warm' || fail "the kept warm slot was not named"
+
+# ...and `check` must NOT call that a failure. provision chose this state
+# deliberately and said so; reporting it as drift made the tool disagree with
+# itself and produced a red line that re-running provisioning could not clear
+# -- which is the one thing check promises, since it audits what provisioning
+# owns and CAN re-fix. Found on a live box, where a warm, leased slot-10 kept
+# `tackup check` permanently red.
 rc=0
 VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 || rc=$?
-[ "$rc" = 1 ] || fail "check called a pool of 3 healthy after 2 was requested"
+[ "$rc" = 0 ] ||
+  fail "check failed on a surplus slot that provision deliberately kept"
+out=$(VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" 2>&1)
+printf '%s' "$out" | grep -qi 'kept' ||
+  fail "check did not explain why the pool is over its requested size"
+
+# A surplus slot that provision WOULD have removed -- cold and unleased -- is
+# drift, because its presence means provisioning has not run.
+rm -f "$CV/$ID/slot-4/.credentials.json"
+rc=0
+VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "a cold, removable surplus slot was not reported as drift"
 out=$(VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" 2>&1 || true)
 printf '%s' "$out" | grep -q 'size drift' || fail "size drift was not named"
-rm -f "$CV/$ID/slot-4/.credentials.json"
+
+# Too FEW slots is always drift: provision creates them, so the gap is real.
+rm -rf "$CV/$ID/slot-4" "$CV/$ID/slot-2"
+rc=0
+VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 1 ] || fail "a pool smaller than requested was not reported as drift"
+PV provision 4 >/dev/null
 
 # A LEASED surplus slot is never removed either: a live session is using it.
 h=$(holder); sleep 0.2

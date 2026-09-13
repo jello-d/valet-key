@@ -708,10 +708,44 @@ cmd_check() {
     want=$(cat "$pd/.size" 2>/dev/null || echo "")
     case "$want" in
       ''|*[!0-9]*) ;;
-      *) if [ "$total" -ne "$want" ]; then
+      *) if [ "$total" -lt "$want" ]; then
            echo "valet-key-slots: $id size drift: $total slots, $want" \
                 "requested" >&2
            return 1
+         elif [ "$total" -gt "$want" ]; then
+           # Surplus is not automatically drift. provision DELIBERATELY keeps a
+           # surplus slot that is warm or in use -- it will not discard a login
+           # someone sat through a browser flow for, nor evict a live session.
+           # Reporting the state it chose as a failure made the tool disagree
+           # with itself, and made a red line that re-running provisioning
+           # could not clear -- which is the one thing `check` promises, since
+           # it audits what provisioning owns and can re-fix.
+           #
+           # So only a surplus slot that provision WOULD have removed counts:
+           # cold and unleased. Its presence means provisioning has not run.
+           kept=0; stray=0
+           for slot in "$pd"/slot-*; do
+             is_slot "$slot" || continue
+             _num=${slot##*/slot-}
+             [ "$_num" -gt "$want" ] || continue
+             _held=0
+             if [ -d "$slot/.lease" ] &&
+                pid_live "$(cat "$slot/.lease/pid" 2>/dev/null || true)"; then
+               _held=1
+             fi
+             if [ -s "$slot/$CRED_FILE" ] || [ "$_held" = 1 ]; then
+               kept=$((kept + 1))
+             else
+               stray=$((stray + 1))
+             fi
+           done
+           if [ "$stray" -gt 0 ]; then
+             echo "valet-key-slots: $id size drift: $total slots, $want" \
+                  "requested, $stray removable" >&2
+             return 1
+           fi
+           echo "valet-key-slots: $id -- $kept over the requested $want," \
+                "kept (warm or in use)"
          fi ;;
     esac
   fi

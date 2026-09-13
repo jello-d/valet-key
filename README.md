@@ -205,7 +205,10 @@ like. Reach for it whenever routing surprises you.
 Three diagnostics, split by what they can fix. **`check`** audits the
 *provisioned* state (pools present, slot counts, structural drift), across the
 whole setup when given no argument; it exits non-zero on drift, including a
-pool whose slot count no longer matches the `N` you last provisioned.
+pool smaller than the `N` you last provisioned, or one holding a surplus slot
+that `provision` would have removed. A surplus slot that's warm or in use
+isn't drift — `provision` keeps those on purpose, and a failure you can't
+clear by re-provisioning isn't one `check` should raise.
 **`doctor`** sweeps the *live environment* `check` can't touch: whether each
 agent command actually routes through valet-key (the shim wins on `PATH`),
 whether an API key in your shell is shadowing a slot's login, whether a pool
