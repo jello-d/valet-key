@@ -696,33 +696,17 @@ cmd_check() {
       fi
     done
   done
-  echo "valet-key-slots: $id -- $total slots, $warm warm, $leased leased"
-  if [ "$drift" -ne 0 ]; then
-    echo "valet-key-slots: $id has $drift dangling link(s)" >&2; return 1
-  fi
-  # Size drift, against the N that provision recorded. A pool with no .size
-  # was made before that was written down, or by hand; there is no declared
-  # value to compare with, so there is nothing to report. Guessing one would
-  # invent drift rather than detect it.
+  # Size verdict FIRST, so it can be folded into the one summary line below.
+  # The engine wraps this output in a single [OK]/[FAIL] marker, so a bare
+  # extra line would escape the marker an integrator paints.
+  sizenote=""; sizebad=0
   if [ -s "$pd/.size" ]; then
     want=$(cat "$pd/.size" 2>/dev/null || echo "")
     case "$want" in
       ''|*[!0-9]*) ;;
       *) if [ "$total" -lt "$want" ]; then
-           echo "valet-key-slots: $id size drift: $total slots, $want" \
-                "requested" >&2
-           return 1
+           sizenote=" -- size drift: $want requested"; sizebad=1
          elif [ "$total" -gt "$want" ]; then
-           # Surplus is not automatically drift. provision DELIBERATELY keeps a
-           # surplus slot that is warm or in use -- it will not discard a login
-           # someone sat through a browser flow for, nor evict a live session.
-           # Reporting the state it chose as a failure made the tool disagree
-           # with itself, and made a red line that re-running provisioning
-           # could not clear -- which is the one thing `check` promises, since
-           # it audits what provisioning owns and can re-fix.
-           #
-           # So only a surplus slot that provision WOULD have removed counts:
-           # cold and unleased. Its presence means provisioning has not run.
            kept=0; stray=0
            for slot in "$pd"/slot-*; do
              is_slot "$slot" || continue
@@ -740,15 +724,23 @@ cmd_check() {
              fi
            done
            if [ "$stray" -gt 0 ]; then
-             echo "valet-key-slots: $id size drift: $total slots, $want" \
-                  "requested, $stray removable" >&2
-             return 1
+             sizenote=" -- size drift: $want requested, $stray removable"
+             sizebad=1
+           else
+             sizenote=" ($kept over the requested $want, kept: warm or in use)"
            fi
-           echo "valet-key-slots: $id -- $kept over the requested $want," \
-                "kept (warm or in use)"
          fi ;;
     esac
   fi
+  echo "valet-key-slots: $id -- $total slots, $warm warm," \
+       "$leased leased$sizenote"
+  if [ "$drift" -ne 0 ]; then
+    echo "valet-key-slots: $id has $drift dangling link(s)" >&2; return 1
+  fi
+  # A pool with no .size was made before that was written down, or by hand:
+  # there is no declared value to compare with, so nothing is reported.
+  # Guessing one would invent drift rather than detect it.
+  [ "$sizebad" -eq 0 ] || return 1
   return 0
 }
 

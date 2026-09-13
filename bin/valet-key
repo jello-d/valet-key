@@ -546,6 +546,13 @@ _check_pool() {   # <id> <base>
     mk_ok "$1 -- ${_o#*-- }"; return 0
   fi
   _r=$(printf '%s' "$_o" | grep -iE 'missing|dangling|drift' | head -1)
+  # Strip the library's own prefix, as the OK path does, so the marker names
+  # the pool once rather than twice. Two shapes reach here: "<id> -- <detail>"
+  # and "<id> <detail>", so peel the prefix rather than split on a separator
+  # one of them does not have.
+  _r=${_r#valet-key-slots: }
+  _r=${_r#"$1" -- }
+  _r=${_r#"$1" }
   mk_bad "$1 -- ${_r:-drift}"; return 1
 }
 
