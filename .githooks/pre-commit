@@ -1,16 +1,41 @@
 #!/bin/sh
-# pre-commit - reject staged lines wider than 80 columns (the project's hard
-# limit for code and prose). Binary blobs are skipped. To land a deliberate
-# exception, commit with --no-verify.
-offenders=$(
-  git diff --cached --name-only --diff-filter=ACM | while IFS= read -r f; do
-    [ "$(git diff --cached --numstat -- "$f" | cut -f1)" = "-" ] && continue
-    git show ":$f" 2>/dev/null |
-      awk -v F="$f" 'length>80{printf "%s:%d (%d cols)\n",F,FNR,length}'
-  done
-)
-[ -z "$offenders" ] && exit 0
-echo "pre-commit: staged lines exceed the 80-column limit:" >&2
-printf '%s\n' "$offenders" | sed 's/^/  /' >&2
-echo "Wrap them, or use: git commit --no-verify (deliberate exception)" >&2
-exit 1
+# .githooks/pre-commit - run the shared conventions test before every commit.
+#
+# CANONICAL COPY: ~/src/shared-notes/_pre-commit, vendored into each repo as
+# .githooks/pre-commit. `tackup notes check` compares the copies and names the
+# drift. EDIT THE CANONICAL COPY, then re-seed: `tackup notes conventions`.
+#
+# IT RUNS THE TEST, IT DOES NOT REIMPLEMENT IT. The hook this replaces carried
+# its own 80-column awk, so the tree had two column checks free to disagree, and
+# two exemption lists to keep in step. One implementation, two entry points: the
+# suite runs conventions.t and so does this.
+#
+# WHOLE TREE, NOT THE STAGED DIFF. A violation anywhere is a violation, and the
+# staged-only version could never see one that arrived by a path it did not
+# watch. The cost is real and accepted: a pre-existing violation elsewhere
+# blocks an unrelated commit until it is fixed or exempted. It runs in about
+# half a second, so the cost is the blocking, not the wait.
+#
+# This is a BACKSTOP, not the rule. `--no-verify` bypasses it in one keystroke,
+# so it can only catch an oversight, never enforce anything against intent. The
+# discipline is the rule and stands on its own.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+for t in "$root/test/conventions.t" "$root/modules/tests/conventions.t"; do
+  [ -f "$t" ] || continue
+  # Captured, not run twice: re-running to show the output would double the
+  # cost and could print a DIFFERENT result if the tree changed underneath.
+  if out=$(sh "$t" 2>&1); then
+    exit 0
+  fi
+  printf '%s\n' "$out" >&2
+  echo >&2
+  echo "pre-commit: the house conventions test failed (whole tree, not just" >&2
+  echo "your diff, so this may be someone else's line). Fix it, add a" >&2
+  echo "deliberate exception to conventions.exempt, or use --no-verify." >&2
+  exit 1
+done
+
+# No conventions test in this repo: nothing to say, and a hook that failed here
+# would block every commit in a repo that never opted in.
+exit 0
