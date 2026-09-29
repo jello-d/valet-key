@@ -45,7 +45,7 @@ ADAPTER_EXP_PATTERN='.*"refreshTokenExpiresAt":\([0-9][0-9]*\).*'
 # then PATH in the user's order. $CLAUDE_BIN overrides (odd install / test).
 #
 # Both the override check and the skip-the-shim rule live in
-# libexec/adapter.sh, so every adapter gets them identically.
+# libexec/adapter_lib, so every adapter gets them identically.
 adapter_realbin() {
   realbin_from claude "$HOME/.npm-global/bin/claude" \
     /usr/local/bin/claude

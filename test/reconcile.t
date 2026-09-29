@@ -26,7 +26,7 @@
 # Nothing outside the scratch dir is touched.
 set -eu
 
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init reconcile
 
 VK=$HERE/bin/valet-key

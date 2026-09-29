@@ -1,4 +1,5 @@
-# test/lib.sh - harness for valet-key's shell tests (test/*.t), sourced by each.
+# test/harness_lib - harness for valet-key's shell tests (test/*.t), sourced
+# by each.
 #
 # Call `harness_init <name>`: sets HERE (the repo root, so a test reaches
 # libexec/<lib>), a private scratch dir T (removed on exit), and

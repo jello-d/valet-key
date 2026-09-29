@@ -24,7 +24,7 @@
 # fail the suite. Without git, it walks the tree instead and skips .git.
 set -eu
 
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init lint
 
 # Tracked files, else every file in the tree. Either way, one path per line.
@@ -40,12 +40,12 @@ files() {
 }
 
 # Is this a shell file? Either a /bin/sh shebang or a name we know is shell.
-# The adapters are sourced FRAGMENTS with no shebang, so they are matched by
-# location: they still have to parse.
+# The adapters and the *_lib files are sourced FRAGMENTS with no shebang, so
+# they are matched by location or classifier: they still have to parse.
 is_shell() {   # <path>
   case ${1#"$HERE"/} in
     libexec/adapters/*) return 0 ;;
-    *.sh|test/*.t|test/run) return 0 ;;
+    *_lib|*.sh|test/*.t|test/run) return 0 ;;
   esac
   head -1 "$1" 2>/dev/null | grep -q '^#!.*/sh' && return 0
   return 1
@@ -53,7 +53,7 @@ is_shell() {   # <path>
 
 # Must this file be executable? Anything the OS or a glob EXECUTES rather than
 # sources: the engine, the libs, the hook examples, the git hook. The adapters
-# and test/lib.sh are sourced, so their mode does not matter.
+# and test/harness_lib are sourced, so their mode does not matter.
 wants_exec() {   # <path>
   case ${1#"$HERE"/} in
     bin/*|libexec/slots|libexec/merge/*|setup.sh|share/hooks/*.d/*) return 0 ;;
@@ -88,7 +88,22 @@ for f in $(files); do
 done
 
 [ "$_n" -gt 0 ] || fail "found no files to lint"
-[ "$_sh" -gt 0 ] || fail "found no shell files to syntax-check"
+
+# DERIVED, not a floor. "At least one shell file" is permission to shrink: it
+# still clears after a rename drops every library out of the classifier, which
+# is exactly how a suffix-keyed selector fails -- silently, still green, just
+# checking less. So assert the classifier against the TREE instead. Under bin/,
+# libexec/ and test/ every file is a program: it is shell, or it says which
+# other language it is. A file that is neither fell through is_shell and was
+# never parsed.
+for f in $(files); do
+  case ${f#"$HERE"/} in bin/*|libexec/*|test/*) ;; *) continue ;; esac
+  is_shell "$f" && continue
+  head -1 "$f" 2>/dev/null | grep -q '^#!' && continue
+  fail "${f#"$HERE"/}: classified as neither shell nor another language, so it
+was never syntax-checked. Either it needs a shebang, or is_shell has drifted
+away from how the tree names its sourced files."
+done
 
 # The adapters are the one group whose mode is load-bearing in the OTHER
 # direction: the engine SOURCES them, and an executable adapter invites

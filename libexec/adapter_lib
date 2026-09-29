@@ -1,4 +1,4 @@
-# libexec/adapter.sh - helpers shared by every adapter. Sourced by the engine
+# libexec/adapter_lib - helpers shared by every adapter. Sourced by the engine
 # BEFORE the adapter (which is itself sourced), so an adapter is only the facts
 # that differ between agents, not a fourth copy of the logic that does not.
 #

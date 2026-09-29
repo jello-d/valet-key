@@ -22,7 +22,7 @@
 # Drives the real extracted functions. Nothing outside the scratch dir.
 set -eu
 
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init profile-dir
 
 VK=$HERE/bin/valet-key

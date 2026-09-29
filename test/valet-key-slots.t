@@ -5,7 +5,7 @@
 # stale scan. Pure string/FS logic in a scratch dir; nothing on the box is
 # touched.
 set -eu
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init valet-key-slots
 
 SLOTS=$HERE/libexec/slots

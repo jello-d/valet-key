@@ -21,7 +21,7 @@
 # config, and no binary outside it is touched.
 set -eu
 
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init launch
 
 VK=$HERE/bin/valet-key

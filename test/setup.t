@@ -1,7 +1,7 @@
 #!/bin/sh
 # setup.t - setup.sh install -> assert links -> check -> uninstall -> assert
 # gone, against a scratch PREFIX. Nothing outside the sandbox is touched.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init setup        # sets HERE (repo root) + fail/pass
 
 run() {

@@ -23,7 +23,7 @@
 # what this particular box happens to have in /usr/bin.
 set -eu
 
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init audit
 
 H=$T/home

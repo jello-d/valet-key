@@ -27,7 +27,7 @@
 # the process forks itself until something gives out.
 set -eu
 
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init adapters
 
 AD=$HERE/libexec/adapters
@@ -48,7 +48,7 @@ drive() {   # <adapter> <expr> [env assignment]...
       . "$1" || exit 91        # the shared helpers, as the engine sources them
       . "$2" || exit 90
       shift 2
-      eval "$@"' _ "$HERE/libexec/adapter.sh" "$AD/$_a" "$_e"
+      eval "$@"' _ "$HERE/libexec/adapter_lib" "$AD/$_a" "$_e"
 }
 
 # Adapters whose install lands under ~/.npm-global/bin (their own first
