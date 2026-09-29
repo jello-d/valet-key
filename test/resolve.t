@@ -2,8 +2,8 @@
 # resolve.t - the two hook seams: profile.d SELECTS, guard.d VETOES.
 #
 # valet-key must decide two things it cannot always know: which profile applies
-# here, and whether it may launch at all. They are irreducibly different -- a
-# veto is not a profile name, a selection cannot say "stop" -- so they are two
+# here, and whether it may launch at all. They are irreducibly different: a
+# veto is not a profile name, a selection cannot say "stop", so they are two
 # seams, and a hook's DIRECTORY says which question it answers. No verb
 # argument, no dispatch, and no need to answer a question you do not care about.
 #
@@ -12,7 +12,7 @@
 #              tell" and is the ONLY thing that passes to the next hook. Empty
 #              output with exit 0 is a real answer ("definitely the default"),
 #              so a provider that knows the baseline can say so instead of
-#              inventing a token -- and a BROKEN hook cannot be mistaken for
+#              inventing a token, and a BROKEN hook cannot be mistaken for
 #              one that deliberately said "baseline".
 #   veto:      EVERY hook runs and ANY refusal refuses. Adding a guard must
 #              only ever make things stricter, or a second guard could silently
@@ -121,7 +121,8 @@ if command -v git >/dev/null 2>&1; then
 
   # The case that proves it is the GIT ROOT and not merely $PWD. A rule
   # pointing INSIDE a repo does not match, because the repo is one piece of
-  # work with one account -- resolving it by cwd would give the same session
+  # work with one account, because resolving it by cwd would give the same
+  # session
   # two different logins depending on which subdirectory it started in.
   printf 'byroot %s/tree/repo/src\n' "$T" > "$T/cfg/profiles"
   got=$(deep "$T/tree/repo/src/deep")
@@ -141,7 +142,7 @@ fi
 
 # --- a hook path containing a SPACE is still a hook -------------------------
 # This used to be a silent loss. The hook list was captured and word-split, so
-# "10 my hook" became three nonexistent paths, each of which "failed" -- and a
+# "10 my hook" became three nonexistent paths, each of which "failed", and a
 # failure is a legitimate answer on both seams. Selection read it as "I cannot
 # tell" and moved on; a guard would have been read as a refusal it never made.
 # Either way the hook was gone and nothing said so. A space in $HOME is
@@ -161,7 +162,7 @@ rm -f "$GD"/*
 # --- the cwd table is validated too, not just hook output -------------------
 # The name becomes a directory component and half a pool id whichever input it
 # arrived on. Validating only the hook would leave the guard looking present
-# while the other door stood open -- and a table is hand-edited, which makes a
+# while the other door stood open, and a table is hand-edited, which makes a
 # stray `../` at least as likely there.
 # (A name with a space is not testable here and does not need to be: the table
 # is whitespace-delimited, so such a name cannot be written in it.)
@@ -225,7 +226,7 @@ exit 1'
 [ "$(guard_rc)" = 1 ] || fail "a warn masked a refusal"
 
 # --- a NON-EXECUTABLE file in guard.d is ignored, not run ------------------
-# It cannot be executed, so running it anyway fails -- and a guard that fails
+# It cannot be executed, so running it anyway fails, and a guard that fails
 # counts as a refusal, which would block every launch on the box because
 # someone dropped a file in and forgot the chmod. Skipping it is the only safe
 # reading; `doctor` is where it gets reported, loudly, as installed-but-inert.

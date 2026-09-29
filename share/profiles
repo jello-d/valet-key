@@ -1,4 +1,4 @@
-# valet-key profiles -- the built-in cwd resolver. Copy to
+# valet-key profiles: the built-in cwd resolver. Copy to
 # ~/.config/valet-key/profiles and edit.
 #
 # Consulted only when every hooks/profile.d/ hook abstains (or there are none),

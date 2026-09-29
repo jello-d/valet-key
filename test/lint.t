@@ -7,19 +7,19 @@
 # never enabled the hook. Same reasoning for the rest: each of these is a
 # defect that reads as fine and only shows up when someone runs the file.
 #
-#   syntax      -- a shell file that does not parse is a runtime failure in a
+#   syntax:      a shell file that does not parse is a runtime failure in a
 #                  launcher that sits in front of every agent command.
-#   80 columns  -- the project's hard limit, for code and prose alike.
-#   exec bit    -- a hook or script that is not executable is SILENTLY SKIPPED
+#   80 columns:  the project's hard limit, for code and prose alike.
+#   exec bit:    a hook or script that is not executable is SILENTLY SKIPPED
 #                  by the thing that would have run it (_hooks_in tests -x),
 #                  which is exactly the "looks wired, enforces nothing" state
 #                  the hook seam exists to avoid.
-#   no CRLF     -- a `\r` on the shebang line makes the kernel report the
+#   no CRLF:     a `\r` on the shebang line makes the kernel report the
 #                  interpreter as missing, with a message that names the wrong
 #                  file.
 #
 # Runs over the files git would SHIP: tracked, plus untracked ones that are
-# not ignored -- so a file added but not yet committed is linted (that is
+# not ignored, so a file added but not yet committed is linted (that is
 # exactly when it is easiest to fix), while a gitignored scratch file cannot
 # fail the suite. Without git, it walks the tree instead and skips .git.
 set -eu
@@ -91,7 +91,7 @@ done
 
 # DERIVED, not a floor. "At least one shell file" is permission to shrink: it
 # still clears after a rename drops every library out of the classifier, which
-# is exactly how a suffix-keyed selector fails -- silently, still green, just
+# is exactly how a suffix-keyed selector fails: silently, still green, just
 # checking less. So assert the classifier against the TREE instead. Under bin/,
 # libexec/ and test/ every file is a program: it is shell, or it says which
 # other language it is. A file that is neither fell through is_shell and was

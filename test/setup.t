@@ -40,7 +40,7 @@ run check >/dev/null 2>&1 || fail "the drift checks did not restore the tree"
 
 # A link pointing at some OTHER tree is drift too, not just a missing one.
 # Two clones on one box is exactly how a stale install goes unnoticed, and
-# the wrong tree EXISTS -- so a check that only asks "is there something
+# the wrong tree EXISTS, so a check that only asks "is there something
 # here" would call it clean while the engine runs out of the other clone.
 mkdir -p "$T/otherclone/libexec"
 ln -sfn "$T/otherclone/libexec" "$T/libexec/valet-key"
@@ -65,7 +65,7 @@ run uninstall >/dev/null 2>&1 || fail "uninstall errored"
 [ -e "$T/libexec/valet-key" ] && fail "libexec link not removed"
 [ -e "$T/share/valet-key" ] && fail "share link not removed"
 
-# uninstall twice is not an error either -- and it removes only OUR links. A
+# uninstall twice is not an error either, and it removes only OUR links. A
 # file someone else put in the prefix under a name we install is theirs.
 run uninstall >/dev/null 2>&1 || fail "second uninstall errored"
 printf 'not ours\n' > "$T/bin/valet-key"

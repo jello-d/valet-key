@@ -1,4 +1,4 @@
-# valet-key hooks -- examples. NOTHING HERE IS INSTALLED.
+# valet-key hooks: examples. NOTHING HERE IS INSTALLED.
 #
 # valet-key ships no hooks and needs none: with an empty (or absent) hooks
 # directory it runs a single `personal` profile, consults the cwd table in
@@ -15,7 +15,7 @@
 # because a file that looks installed and has never run is the worst state
 # this seam has.
 #
-# These examples are deliberately about ordinary things -- a VPN, a battery, a
+# These examples are deliberately about ordinary things: a VPN, a battery, a
 # git remote, a kube context -- because the seam is not about any one
 # integration. Anything that can answer a question with an exit status can be
 # a hook.

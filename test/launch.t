@@ -8,7 +8,7 @@
 # and still hand the process the wrong environment.
 #
 # The agent is a stub that prints its config dir, whether the API-key override
-# was scrubbed, and its arguments -- so "did the launch work" becomes a string
+# was scrubbed, and its arguments, so "did the launch work" becomes a string
 # comparison instead of a login.
 #
 # Both entry points are exercised, because they are different code paths to
@@ -151,8 +151,8 @@ rm -f "$GD"/*
 
 # --- resolve: the same decision, WITHOUT launching --------------------------
 # The dry run. Before it existed, the only way to learn which account a
-# directory would use was to launch the agent and read its stderr -- run the
-# thing you were trying to check first -- and when the answer surprised you
+# directory would use was to launch the agent and read its stderr (run the
+# thing you were trying to check first) and when the answer surprised you
 # there was nothing to inspect.
 mkhook "$PD/50-sel" '#!/bin/sh
 echo work'
@@ -217,7 +217,7 @@ rm -f "$GD"/*
 # These used to disagree: login resolved from context while provision and
 # check fell back to the default. So `cd ~/work && valet-key provision claude`
 # built the PERSONAL pool while `valet-key login` a line later acted on WORK,
-# and nothing said so -- the pool you thought you had made was elsewhere.
+# and nothing said so: the pool you thought you had made was elsewhere.
 mkhook "$PD/50-sel" '#!/bin/sh
 echo work'
 mkdir -p "$H/.claude-work"

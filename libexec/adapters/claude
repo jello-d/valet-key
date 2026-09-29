@@ -13,7 +13,7 @@ ADAPTER_SLOTS=1                    # Claude's OAuth refresh token rotates
 ADAPTER_CRED_FILE=.credentials.json
 # history.jsonl is the PROMPT-RECALL log, and it is shared rather than private
 # despite being agent-written. The rule for that split is not "who writes it"
-# but "can concurrent writers corrupt it" -- and an APPEND-ONLY log is the one
+# but "can concurrent writers corrupt it", and an APPEND-ONLY log is the one
 # agent-written shape where they cannot, because appends do not conflict.
 # Verified on this agent: writes land in place on the same inode, one write()
 # per entry, largest entry well under PIPE_BUF.
@@ -27,7 +27,7 @@ ADAPTER_SEED_FILES=.claude.json
 ADAPTER_PROC_MATCH=claude          # cmdline match for the dead-slot reclaim
 # Files that are agent-written (so they cannot be shared by symlink) but whose
 # contents SHOULD be common to the pool. .claude.json carries projects[<path>]
-# -- trust, per-project allowed tools, MCP approvals -- which is per-slot state
+# (trust, per-project allowed tools, MCP approvals) which is per-slot state
 # nobody wants to be per-slot: the same repo asks to be trusted again on every
 # slot it has not been opened in. libexec/merge/claude reconciles them.
 ADAPTER_MERGE_FILES=.claude.json

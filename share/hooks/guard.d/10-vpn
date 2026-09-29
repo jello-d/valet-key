@@ -2,7 +2,7 @@
 # EXAMPLE veto: refuse to launch a work profile with the VPN down.
 #
 # The case for this: an agent that cannot reach the internal package registry
-# does not stop -- it improvises. It reaches for a public mirror, or writes
+# does not stop: it improvises. It reaches for a public mirror, or writes
 # code around the dependency it could not fetch, and you find out in review.
 # Refusing up front is cheaper than reading the diff.
 #
@@ -27,7 +27,7 @@ case ${1:-} in
 esac
 
 # Substitute your own liveness test: a route, a resolvable internal name, a
-# reachable host. Cheap and non-interactive -- this runs on every launch.
+# reachable host. Cheap and non-interactive, since this runs on every launch.
 if ip route show 2>/dev/null | grep -q '^10\.0\.0\.0/8'; then
   exit 0
 fi

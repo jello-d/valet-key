@@ -3,7 +3,7 @@
 #
 # THE PROBLEM. A slot's .claude.json is a private copy, not a symlink, because
 # the agent rewrites it constantly and N sessions on one inode would interleave
-# read-modify-write. Correct -- but `projects[<path>]` is where trust,
+# read-modify-write. Correct, but `projects[<path>]` is where trust,
 # per-project allowed tools and MCP approvals live, so the same repo had to be
 # trusted again on every slot it had not been opened in, and a new slot started
 # knowing nothing.
@@ -20,7 +20,7 @@
 #   - identity and per-directory state never move. oauthAccount is the account;
 #     counters and caches are meaningless merged.
 #   - the partition is one pool, base included, and it is never crossed.
-#   - a torn source is skipped, not fatal -- sources are live files.
+#   - a torn source is skipped, not fatal, because sources are live files.
 #   - an agent that declares nothing gets none of this.
 #
 # Nothing outside the scratch dir is touched.
@@ -105,8 +105,8 @@ done
 # --- an UNTOUCHED entry must not beat one that was actually changed ---------
 # This is the regression that sent trust prompts back after every reboot. The
 # first rule here was "newest file wins, per project", and a file's mtime says
-# when ANY part of it changed. A busy slot -- a live session bumping a counter
-# every few seconds -- therefore became "newest" for every project it held,
+# when ANY part of it changed. A busy slot (a live session bumping a counter
+# every few seconds) therefore became "newest" for every project it held,
 # including ones it had never been opened in, and its untouched
 # `hasTrustDialogAccepted: false` stub overwrote another slot's real grant.
 #
@@ -116,7 +116,7 @@ done
 setp "$P/slot-1/.claude.json" /reboot no '[]'
 E sh "$VK" reconcile claude personal >/dev/null || fail "reconcile failed"
 
-# One slot is opened there and the human grants trust. NO reconcile yet -- so
+# One slot is opened there and the human grants trust. NO reconcile yet, so
 # every other member still holds the agreed `false`, exactly as after a reboot.
 sleep 1.1
 setp "$P/slot-2/.claude.json" /reboot yes '["Bash"]'
@@ -147,7 +147,7 @@ done
 
 # --- a simultaneous cohort converges the whole pool, not just its own slot --
 # `mux resume` brings every session up at once. None can learn from the others
-# during its own startup, so each launch converges the ENTIRE partition -- that
+# during its own startup, so each launch converges the ENTIRE partition, that
 # is what makes the pool consistent from the first one onward.
 setp "$P/slot-3/.claude.json" /cohort yes '[]'
 rm -rf "$P"/slot-*/.lease
@@ -256,8 +256,8 @@ for _s in "$P"/slot-*/.reconciled*; do
 done
 
 # --- doctor surfaces a pool that has not converged --------------------------
-# Not a breakage -- nothing is broken and a launch reconciles the slot it
-# uses anyway -- but the SYMPTOM (being asked to trust a repo you already
+# Not a breakage (nothing is broken and a launch reconciles the slot it
+# uses anyway) but the SYMPTOM (being asked to trust a repo you already
 # trusted) reads as the tool misbehaving, so it is worth naming.
 setp "$P/slot-2/.claude.json" /drifted yes '[]'
 out=$(E sh "$VK" doctor 2>&1 || true)

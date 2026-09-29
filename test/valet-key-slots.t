@@ -60,7 +60,7 @@ sh "$SLOTS" sync "$ID" "$B" >/dev/null 2>&1 || fail "sync healing lock failed"
 
 # --- ADOPTION: a file that used to be private is folded in, not discarded ----
 # When history.jsonl moved from private-per-slot to shared, every existing slot
-# already held a real copy with records nothing else had -- 754 prompts on the
+# already held a real copy with records nothing else had: 754 prompts on the
 # pool this was written for. link_into refuses to clobber a real file, which is
 # right, so without adoption the migration would either lose them or leave ten
 # drift warnings and the fragmentation intact forever.
@@ -84,7 +84,8 @@ grep -q from-base "$ADB/history.jsonl" ||
   fail "adoption lost what the shared copy already held"
 # ...in TIMESTAMP order, so recall reads as one history rather than two
 # spliced together. The slot's record is older than the base's, so file order
-# and timestamp order disagree -- without sorting, the base's would come first.
+# and timestamp order disagree, and without sorting, the base's would come
+# first.
 [ "$(head -1 "$ADB/history.jsonl" | grep -c only-in-slot)" = 1 ] ||
   fail "the adopted records were not merged in timestamp order"
 
@@ -108,7 +109,7 @@ unset VALET_KEY_MERGE_CMD
 
 # --- SHARING: concurrent appends from two sessions both survive -------------
 # The reason this file can be shared at all. Appends do not conflict, so two
-# sessions writing at once cannot lose each other's prompts -- which a
+# sessions writing at once cannot lose each other's prompts, which a
 # read-modify-write document could not promise.
 SH=$T/shared; SHB=$T/sharedbase; mkdir -p "$SHB"
 printf '{}\n' > "$SHB/.claude.json"; : > "$SHB/history.jsonl"
@@ -138,8 +139,8 @@ print(bad)' "$SHB/history.jsonl")
 # Found live: the agent creates its own lock directory next to the slot it is
 # using, named <slot>.lock. It matches the `slot-*` glob and it IS a directory,
 # so the bare `[ -d ]` test these loops used let it through as a slot. A real
-# pool of 10 reported 14 -- which threw off warm and leased counts, saturation
-# warnings and `check` alike -- and cmd_lease walked the same list, so a lock
+# pool of 10 reported 14, which threw off warm and leased counts, saturation
+# warnings and `check` alike, and cmd_lease walked the same list, so a lock
 # directory could be leased out and handed to an agent AS ITS CONFIG DIR.
 mkdir -p "$P/slot-1.lock" "$P/slot-99.lock" "$P/slot-notanumber"
 _cnt=$(sh "$SLOTS" counts "$ID")
@@ -181,7 +182,7 @@ kill "$h1" "$h3" 2>/dev/null; wait 2>/dev/null || true
 # Claiming is mkdir-then-write-pid, so there is an instant where the lock
 # exists and the pid file does not. Reading that as "no holder recorded, so it
 # must be stale" would let a second leaser tear down a lock the first had just
-# taken and hand both of them the same slot -- the token race the pool exists
+# taken and hand both of them the same slot: the token race the pool exists
 # to remove. An absent or empty pid means busy, and busy means leave it alone.
 MF=$T/midflight; mkdir -p "$MF"
 VALET_KEY_POOL_ROOT=$MF sh "$SLOTS" provision "$ID" "$B" 2 >/dev/null
@@ -227,7 +228,7 @@ got=$(VALET_KEY_POOL_ROOT=$WP sh "$SLOTS" lease "$ID" "$B" "$hw" 2>/dev/null)
   fail "a reclaimable WARM slot lost to a free cold one: ${got##*/}"
 kill "$hw" 2>/dev/null || true; wait "$hw" 2>/dev/null || true
 
-# With warmth equal, position decides -- so the pool fills predictably rather
+# With warmth equal, position decides, so the pool fills predictably rather
 # than scattering across slots.
 rm -rf "$WP/$ID"/slot-*/.lease "$WP/$ID/slot-3/.credentials.json"
 hw=$(holder); sleep 0.2
@@ -240,7 +241,7 @@ kill "$hw" 2>/dev/null || true; wait "$hw" 2>/dev/null || true
 # The scan takes the first slot that is free OR reclaimable, in order, and
 # that ordering is the policy rather than an accident. Skipping ahead to an
 # untouched slot instead of recycling an earlier one that already holds a
-# login costs the user a sign-in for nothing -- and a pool would drift toward
+# login costs the user a sign-in for nothing, and a pool would drift toward
 # every slot being warm, which is the opposite of paying only for the
 # concurrency you use.
 PR=$T/pref; mkdir -p "$PR"
@@ -293,14 +294,15 @@ kill "$hg2" 2>/dev/null || true; wait "$hg2" 2>/dev/null || true
 # that died (a reboot, a killed terminal), and several sessions starting at
 # once. Reclaiming used to be `rm -rf` then `mkdir`, which two leasers could
 # interleave so that the second DELETED THE FIRST'S LIVE LOCK and both walked
-# away holding the same slot -- one credentials file, two live sessions, which
+# away holding the same slot: one credentials file, two live sessions, which
 # is the exact token race the pool exists to remove.
 #
 # Repeated rounds because a race that reproduces sometimes is still a race: on
 # the pre-fix code this fired within a dozen rounds.
 # Each leaser must present its OWN live holder whose cmdline matches
 # $VALET_KEY_PROC_MATCH. Passing a pid that does not match would make every
-# lease look reclaimable to everyone -- correct behaviour, but it would hide
+# lease look reclaimable to everyone, which is correct behaviour, but it would
+# hide
 # the race this is here to catch behind an expected duplicate.
 CP=$T/conc; mkdir -p "$CP" "$T/cout"
 VALET_KEY_POOL_ROOT=$CP sh "$SLOTS" provision "$ID" "$B" 3 >/dev/null
@@ -408,7 +410,7 @@ printf '%s\n' "$out" | grep -q 'slot-3' && fail "cold slot listed"
   || fail "expected exactly one near-cap line"
 
 # --- login-stale: re-login exactly the slots `stale` would have listed -------
-# The write half of the same question. It must pick the same slots -- a
+# The write half of the same question. It must pick the same slots, a
 # re-login flow that missed one would leave a session to discover the cap the
 # hard way, and one that took them all would burn a login on a fresh slot.
 LS() { VALET_KEY_POOL_ROOT=$SP sh "$SLOTS" "$@" "$ID" "$AB"; }
@@ -429,7 +431,7 @@ printf '%s' "$out" | grep -qi "none within" \
 [ -f "$T/warmed" ] && fail "login-stale logged in with nothing near the cap"
 
 # --- provision CONVERGES on N, rather than only ever growing ----------------
-# It used to just create 1..N, so asking for 2 over a pool of 5 left 5 -- and
+# It used to just create 1..N, so asking for 2 over a pool of 5 left 5,- and
 # check called that healthy, because nothing had recorded what was asked for.
 # Asserted 2, actual 5, green marker.
 CV=$T/conv; CB=$T/convbase; mkdir -p "$CB"; printf '{}\n' > "$CB/.claude.json"
@@ -464,7 +466,7 @@ printf '%s' "$out" | grep -qi 'warm' || fail "the kept warm slot was not named"
 # ...and `check` must NOT call that a failure. provision chose this state
 # deliberately and said so; reporting it as drift made the tool disagree with
 # itself and produced a red line that re-running provisioning could not clear
-# -- which is the one thing check promises, since it audits what provisioning
+# which is the one thing check promises, since it audits what provisioning
 # owns and CAN re-fix. Found on a live box, where a warm, leased slot-10 kept
 # `tackup check` permanently red.
 rc=0
@@ -475,7 +477,7 @@ out=$(VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" 2>&1)
 printf '%s' "$out" | grep -qi 'kept' ||
   fail "check did not explain why the pool is over its requested size"
 
-# A surplus slot that provision WOULD have removed -- cold and unleased -- is
+# A surplus slot that provision WOULD have removed (cold and unleased) is
 # drift, because its presence means provisioning has not run.
 rm -f "$CV/$ID/slot-4/.credentials.json"
 rc=0
@@ -510,7 +512,7 @@ VALET_KEY_POOL_ROOT=$CV sh "$SLOTS" check "$ID" "$CB" >/dev/null 2>&1 \
 # Which file holds the credential, and the pattern that reads a cap out of it,
 # come from the adapter. An unfiltered scan can only be right for one agent at
 # a time: run it with another agent's policy in the environment and every
-# capped slot reports "cap unknown" -- a silent no-op in the one feature whose
+# capped slot reports "cap unknown", a silent no-op in the one feature whose
 # whole job is to speak up before a slot goes cold.
 creds "$SP/$ID/slot-1" $(( now_ms + 3 * 86400000 ))    # near cap again
 out=$(VALET_KEY_POOL_ROOT=$SP sh "$SLOTS" stale claude)

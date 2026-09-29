@@ -115,7 +115,8 @@ name within the config dir" ;;
     pm=$(drive "$a" 'printf %s "${ADAPTER_PROC_MATCH-}"')
     [ -n "$pm" ] || fail "$a: pooled but declares no ADAPTER_PROC_MATCH (a \
 lease could be reclaimed from a live session after a pid is reused)"
-    # The cred file must never be listed as shared or seeded -- either would
+    # The cred file must never be listed as shared or seeded, because either
+    # would
     # copy or link the very file the pool exists to keep private.
     for lst in ADAPTER_STATIC_FILES ADAPTER_SEED_FILES; do
       v=$(drive "$a" "printf %s \"\${$lst-}\"")
@@ -155,8 +156,8 @@ lease could be reclaimed from a live session after a pid is reused)"
     >/dev/null 2>&1 || rc=$?
   [ "$rc" != 0 ] || fail "$a: a non-executable \$$BINVAR was accepted"
 
-  # THE safety property. The shim is the first thing on PATH -- that is the
-  # entire point of a shim -- and it is also, on disk, this engine. Returning
+  # THE safety property. The shim is the first thing on PATH, which is the
+  # entire point of a shim, and it is also, on disk, this engine. Returning
   # it would exec ourselves.
   shim_at "$T/front/$a"
   shim_at "$H/.npm-global/bin/$a"

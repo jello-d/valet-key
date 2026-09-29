@@ -140,7 +140,7 @@ def choose(key, candidates, previous, bootstrap):
         # No state yet, so no provenance: we cannot tell a grant from a stub
         # that was never asked. Prefer the grant. A `true` is a deliberate
         # human answer, a `false` is usually "never prompted here", and this
-        # runs exactly once per pool -- from the next merge on, provenance
+        # runs exactly once per pool: from the next merge on, provenance
         # decides and a revocation wins normally.
         granted = [c for c in candidates if c[1].get(GRANT) is True]
         if granted:

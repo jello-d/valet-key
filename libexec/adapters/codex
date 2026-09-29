@@ -3,7 +3,7 @@
 # Sourced by the engine (bin/valet-key). Codex is the SECOND pooled agent (after
 # Claude Code) and the proof the slot pool is agent-generic: it stores its whole
 # identity under one dir, $CODEX_HOME, and its ChatGPT OAuth refresh token is
-# SINGLE-USE and rotates on refresh -- so two live sessions sharing one
+# SINGLE-USE and rotates on refresh, so two live sessions sharing one
 # auth.json knock each other into a re-login, the race a slot pool isolates.
 
 ADAPTER_ENV=CODEX_HOME             # relocates config AND auth.json together
@@ -40,5 +40,5 @@ adapter_realbin() {
 }
 
 # Codex errors if CODEX_HOME points at a MISSING dir (it canonicalises it), so
-# the engine mkdir -p's the config dir before exec -- no per-adapter work.
+# the engine mkdir -p's the config dir before exec, so no per-adapter work.
 adapter_preexec() { :; }

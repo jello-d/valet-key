@@ -22,7 +22,7 @@
 realbin_from() {
   _rb_agent=$1; shift
 
-  # The explicit override wins outright -- but it is VERIFIED, not trusted. A
+  # The explicit override wins outright, but it is VERIFIED, not trusted. A
   # typo'd path used to sail through here and only surface much later, as the
   # slot-login flow reporting "still cold" with no hint that the binary it
   # tried to run does not exist. Someone who sets this is making a claim about

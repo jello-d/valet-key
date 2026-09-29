@@ -8,7 +8,7 @@
 # lines starting with # are ignored.
 #
 # Use it for a config dir that must live at a specific path (a sealed location),
-# or for a tool whose env var points at a HOME rather than a config dir -- e.g.
+# or for a tool whose env var points at a HOME rather than a config dir, e.g.
 # gemini's GEMINI_CLI_HOME, where the default <base>-<profile> naming would be
 # an awkward $HOME sibling.
 #

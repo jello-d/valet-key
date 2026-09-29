@@ -9,7 +9,7 @@
 #
 # Two rules, in order:
 #   1. an explicit <agent> <profile> <dir> line in $VALET_KEY_CONFIG/dirs, for
-#      a config dir that must live at a specific path -- a sealed location, or
+#      a config dir that must live at a specific path: a sealed location, or
 #      a tool whose env var points at a HOME rather than a config dir;
 #   2. otherwise the adapter's base for the DEFAULT profile, <base>-<profile>
 #      for any other.
@@ -98,7 +98,7 @@ rm -f "$T/cfg/dirs"
 # --- the profile name is a PATH COMPONENT, so it is validated ---------------
 # Everything above turns the profile into a directory suffix; that is why
 # valid_profile exists. resolve.t covers the character classes on the hook
-# path -- here, the LENGTH bound, which is the one a DNS-label check is easy
+# path, here the LENGTH bound, which is the one a DNS-label check is easy
 # to write without.
 vp() {   # <name> -> 0 valid, 1 not
   _r=0

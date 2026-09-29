@@ -2,14 +2,14 @@
 # audit.t - the two diagnostics, and the line between them.
 #
 # `check` audits the PROVISIONED state: pools present, slots counted, no
-# structural drift. It is the declarative half -- everything it reports,
+# structural drift. It is the declarative half: everything it reports,
 # provisioning owns and can re-fix.
 #
 # `doctor` audits the LIVE ENVIRONMENT, which provisioning cannot touch: does
 # typing the agent actually route through valet-key, is an API key in the
 # shell shadowing every slot login, is a pool saturated, is a slot near its
-# cap. Read-only, and it deliberately fails on only ONE class of thing -- a
-# breakage -- so that a wall of advisories never trains anyone to ignore a red
+# cap. Read-only, and it deliberately fails on only ONE class of thing, a
+# breakage, so that a wall of advisories never trains anyone to ignore a red
 # line.
 #
 # Both are worth testing precisely because nobody reads their output closely.
@@ -50,7 +50,7 @@ synth unshimmed      # a real binary of this name will sit unshimmed on PATH
 synth absent         # nothing of this name exists anywhere
 
 # A SECOND pooled agent, sorting after claude, whose credential file and cap
-# policy are different -- and whose cap pattern is empty, meaning "this agent
+# policy are different, and whose cap pattern is empty, meaning "this agent
 # records no absolute cap" (codex is the real example). Its presence is the
 # whole point: a cross-pool scan carries per-agent policy in the environment,
 # so it can only ever be right for one agent at a time, and getting that wrong
@@ -77,7 +77,7 @@ has() {   # <output> <substring> <message>
 hasnt() { case $1 in *"$2"*) fail "$3: $1" ;; esac; }
 
 # ===========================================================================
-# check -- the declarative drift audit
+# check: the declarative drift audit
 # ===========================================================================
 
 # No pools at all is a legitimate state, not a finding: valet-key without a
@@ -103,7 +103,7 @@ out=$(E sh "$VK" check claude personal) || fail "single-pool check failed"
 has "$out" "claude/personal" "single-pool check did not name the pool"
 
 # A pool that should exist and does not is the headline failure, and it must
-# reach the EXIT STATUS -- an integrator folds that into its own report and
+# reach the EXIT STATUS, and an integrator folds that into its own report and
 # never reads the text.
 rc=0; out=$(E sh "$VK" check claude work) || rc=$?
 [ "$rc" = 1 ] || fail "check on a missing pool exited $rc, want 1"
@@ -111,7 +111,7 @@ has "$out" "[FAIL]" "a missing pool was not marked FAIL"
 has "$out" "MISSING" "a missing pool did not say what was wrong"
 
 # Structural drift inside a present pool: a shared link whose target is gone.
-# The pool still LOOKS provisioned -- right slot count, right names -- which
+# The pool still LOOKS provisioned (right slot count, right names) which
 # is exactly why this has to be checked rather than eyeballed.
 ln -s "$H/.claude/vanished" "$T/pool/claude/personal/slot-1/dangler"
 rc=0; out=$(E sh "$VK" check claude personal) || rc=$?
@@ -131,7 +131,7 @@ has "$out" "claude/personal" "one bad pool aborted the whole sweep"
 rm -rf "$T/pool/ghostagent"
 
 # ===========================================================================
-# doctor -- the environmental sweep
+# doctor: the environmental sweep
 # ===========================================================================
 # doctor's TEXT, with its status discarded (asserted separately, below): a
 # non-zero exit is one of the things under test here, and it must not abort
@@ -151,7 +151,7 @@ has "$out" "claude routes through valet-key" "a working shim was not confirmed"
 has "$out" "unshimmed resolves to" "a bypassed agent was not flagged"
 has "$out" "not the shim" "the bypass was not explained"
 has "$out" "absent: not on PATH" "an uninstalled agent was not IGNOREd"
-# An uninstalled agent is not a problem -- most boxes run one or two of these.
+# An uninstalled agent is not a problem: most boxes run one or two of these.
 hasnt "$out" "[FAIL] absent" "an uninstalled agent was treated as a breakage"
 
 [ "$(doc_rc)" = 1 ] || fail "a shim that does not intercept did not fail doctor"
@@ -203,7 +203,8 @@ rm -rf "$T/pool/claude/saturated" "$H/.claude-saturated"
 # A profile you can REACH with no pool behind it. This is the tool's central
 # promise quietly unmet: with no pool, a launch silently uses the shared base
 # dir, so every session for that profile shares one credentials file exactly
-# as it would if valet-key were not installed. `check` cannot catch it -- it
+# as it would if valet-key were not installed. `check` cannot catch it, because
+# it
 # audits pools that exist, and this failure's whole shape is a pool that does
 # not.
 mkdir -p "$H/.claude-unpooled"
@@ -228,7 +229,8 @@ esac
 rm -f "$T/cfg/profiles"; rm -rf "$H/.claude-unpooled"
 
 # A slot near its hard cap. The cap is absolute from login and refreshing does
-# NOT extend it, so the only remedy is a re-login BEFORE it lands -- after it
+# NOT extend it, so the only remedy is a re-login BEFORE it lands, because after
+# it
 # lands, a session is already being forced to sign in mid-work.
 soon=$(( ($(date +%s) + 2 * 86400) * 1000 ))
 printf '{"claudeAiOauth":{"refreshTokenExpiresAt":%s}}\n' "$soon" \

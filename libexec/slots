@@ -1,9 +1,9 @@
 #!/bin/sh
-# valet-key slots -- per-session credential-slot pool for a coding agent.
+# valet-key slots: per-session credential-slot pool for a coding agent.
 #
 # Some agents keep a single credentials file whose refresh token is SINGLE-USE
 # and rotates on every refresh: session A refreshes, the server invalidates the
-# old token, and session B's in-memory copy is now dead -- B is forced to
+# old token, and session B's in-memory copy is now dead, and B is forced to
 # re-login. (Claude Code is the canonical case.) This isolates exactly that one
 # file so no two live sessions share a rotating token.
 #
@@ -16,19 +16,20 @@
 # What is shared vs private:
 #   - directories                : DIR SYMLINK to base (app writes inside them).
 #   - the STATIC files           : FILE SYMLINK to base. Either user-edited and
-#                                  ~stable, or an APPEND-ONLY log -- appends do
-#                                  not conflict, so sharing one is safe.
+#                                  ~stable, or an APPEND-ONLY log
+#                                  (appends do not conflict, so sharing
+#                                  one is safe).
 #   - the SEED files             : private copy, made ONCE if absent.
-#   - the CRED file ($CRED_FILE) : PRIVATE, never seeded -- isolation target.
+#   - the CRED file ($CRED_FILE) : PRIVATE, never seeded: the isolation target.
 #   - *.lock, every other file   : private, born in-slot.
 #
 # The split is by WHO WRITES, not by what a file holds. A human-edited file can
 # be symlinked: edits are rare and a person resolves a conflict. An
 # AGENT-written file cannot, because N sessions on one inode interleave
-# read-modify-write and lose each other's edits -- so those are private copies.
+# read-modify-write and lose each other's edits, so those are private copies.
 #
 # That leaves a third case: agent-written, but wanted in common. .claude.json
-# is the example -- it carries per-project trust, allowed tools and MCP
+# is the example: it carries per-project trust, allowed tools and MCP
 # approvals, which nobody wants to re-answer per slot. Those are the MERGE
 # files: still private copies, RECONCILED across the pool afterwards. See
 # `reconcile` below.
@@ -103,7 +104,7 @@ seed_copy() {   # copy <src> to <dst> privately and atomically
 }
 
 # ensure <linkpath> is a symlink to <target>; report (not clobber) a real file
-# or dir sitting where the link belongs -- asserted-vs-actual drift, made loud.
+# or dir sitting where the link belongs: asserted-vs-actual drift, made loud.
 link_into() {
   tgt=$1; lp=$2
   if [ -L "$lp" ]; then
@@ -165,7 +166,7 @@ seed_slot() {
 # Only the agent's helper knows whether a given file can be folded at all: an
 # APPEND-ONLY log can (its records accumulate, so a union is their combined
 # history), a read-modify-write document cannot. When it declines, or there is
-# no helper, nothing happens and link_into reports the drift as before -- the
+# no helper, nothing happens and link_into reports the drift as before, and the
 # safe direction.
 adopt_static() {   # <base> <slot>
   [ -n "$MERGE_CMD" ] || return 0
@@ -222,7 +223,7 @@ pool_counts() {
 # provision CONVERGES the pool on N: it creates what is missing and removes
 # what is surplus, which is what makes re-running it a resize rather than a
 # high-water mark. It used to only ever grow, so `provision ... 2` over a pool
-# of 5 left 5 -- and `check` called that healthy, because nothing recorded what
+# of 5 left 5, and `check` called that healthy, because nothing recorded what
 # had been asked for. Asserted 2, actual 5, green marker.
 #
 # So N is WRITTEN DOWN (.size). That is what lets `check` audit the size at
@@ -238,7 +239,7 @@ pool_counts() {
 # visible instead of accumulating quietly.
 # Is <path> one of this pool's slots? The `slot-*` glob is NOT enough on its
 # own. An agent creates its own lock directory beside the slot it is using,
-# named <slot>.lock -- it matches the glob, and it IS a directory, so the bare
+# named <slot>.lock: it matches the glob, and it IS a directory, so the bare
 # `[ -d ]` test that used to guard these loops let it straight through.
 #
 # The damage was live and quiet: a real pool of 10 reported 14 slots (so warm
@@ -300,7 +301,7 @@ cmd_provision() {
 # arbitrary grouping. .claude.json and its equivalents carry the ACCOUNT
 # identity, so merging across pools would move work state into personal; the
 # pool boundary is exactly the boundary this must not cross. And the BASE
-# belongs in it for two reasons -- it is where an overflowing launch lands, and
+# belongs in it for two reasons: it is where an overflowing launch lands, and
 # it is what provision seeds a new slot FROM, so reconciling into it is what
 # makes a freshly created slot start current instead of blind.
 #
@@ -308,7 +309,8 @@ cmd_provision() {
 # written by the AGENT, constantly, so N sessions on one inode would interleave
 # read-modify-write and lose each other's edits. That is why they are private
 # copies in the first place (SEED_FILES). Merging keeps every writer on its own
-# file and converges them afterwards, which is strictly safer -- the worst case
+# file and converges them afterwards, which is strictly safer, because the worst
+# case
 # is a merge that loses a cycle and is redone on the next one, never a
 # corrupted config.
 #
@@ -343,7 +345,8 @@ reconcile() {   # <base> <pooldir> [--check]
 # Has anything in the partition been written since this slot was last brought
 # up to date? Purely an optimisation: reconciling is idempotent and the helper
 # does not rewrite an unchanged file, so the only cost of answering wrong is a
-# few milliseconds. The stamps live in the POOL dir, not in the slots -- an
+# few milliseconds. The stamps live in the POOL dir, not in the slots, because
+# an
 # agent's config directory is the agent's, and valet-key's bookkeeping has no
 # business appearing inside one.
 needs_reconcile() {   # <base> <pooldir> <slot>
@@ -364,7 +367,7 @@ needs_reconcile() {   # <base> <pooldir> <slot>
 #
 # That matters for the case this exists to serve: `mux resume` after a reboot
 # brings every session up at once. They all lease within the same second, so
-# none can learn anything from the others during their own startup -- but each
+# none can learn anything from the others during their own startup, but each
 # one converging the whole partition means the pool is consistent from the
 # first launch onward, and a slot that comes up later inherits it.
 #
@@ -396,12 +399,12 @@ stamp_reconciled() {   # <pooldir> <slot>
 # same dead pid, and the second then tears down the lock the first just took.
 #
 # Breaking a mutex whose owner is gone is itself an inspect-then-modify, so it
-# is not perfectly safe either -- but reaching it needs a process to have died
+# is not perfectly safe either, but reaching it needs a process to have died
 # in the microseconds it holds the mutex, and the alternative (never breaking
 # it) wedges reclaim on this pool forever.
 # It WAITS, briefly, rather than giving up on first contention. Giving up
 # immediately looked tidy and was wrong: the moment reclaim matters most is a
-# reboot, when every holder is dead and several sessions start at once -- and
+# reboot, when every holder is dead and several sessions start at once, and
 # then all but one leaser would fall back to the shared base, which is the
 # exact sharing the pool exists to prevent. The hold is microseconds, so a
 # bounded wait costs nothing and almost never runs twice.
@@ -477,11 +480,11 @@ cmd_lease() {
   #
   # Both passes run inside ONE hold of the reclaim mutex, because recycling is
   # INSPECT-then-MODIFY: read a pid, judge it, act on it. Making the individual
-  # steps atomic does not make that safe -- two leasers can read the same dead
+  # steps atomic does not make that safe: two leasers can read the same dead
   # pid, and the second then tears down the lock the first just took. That
   # really happened, and it put two live sessions on one credentials file: the
   # exact race the pool exists to remove, reintroduced by the code meant to
-  # recycle it. Its trigger is not exotic either -- a reboot, then several
+  # recycle it. Its trigger is not exotic either: a reboot, then several
   # sessions starting at once with every recorded holder dead.
   if reclaim_lock "$pd"; then
     if _got=$(claim_pass "$base" "$pd" "$holder" 1 1); then
@@ -493,8 +496,9 @@ cmd_lease() {
     reclaim_unlock "$pd"
   else
     # Could not serialize within the wait. Claiming a genuinely FREE slot is
-    # still safe without the mutex -- mkdir is atomic and self-exclusive, and
-    # only RECYCLING needs coordination -- so try that, still warm-first,
+    # still safe without the mutex, because mkdir is atomic and self-exclusive,
+    # and
+    # only RECYCLING needs coordination, so try that, still warm-first,
     # before giving up and sharing the base.
     if _got=$(claim_pass "$base" "$pd" "$holder" 1 0); then
       printf '%s\n' "$_got"; return 0

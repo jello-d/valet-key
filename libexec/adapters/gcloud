@@ -2,7 +2,7 @@
 #
 # The first NON-agent adapter: gcloud is not a coding agent, but it fits
 # valet-key's
-# engine exactly -- it stores its whole identity (creds, ADC, config) under one
+# engine exactly: it stores its whole identity (creds, ADC, config) under one
 # dir, $CLOUDSDK_CONFIG, which is precisely what valet-key selects per profile.
 # So
 # `gcloud` routes through the same resolve+guard as claude (the work/personal

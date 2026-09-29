@@ -3,7 +3,7 @@
 #
 # The case for this: a long agent run is expensive in wall-clock and in power,
 # and finding out you were unplugged when the machine sleeps mid-run is worse
-# than being told at the start. But it is your call, not the tool's -- so this
+# than being told at the start. But it is your call, not the tool's, so this
 # warns and proceeds. Exit 2 exists precisely for "you probably want to know",
 # as distinct from "no".
 #

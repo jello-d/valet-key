@@ -1,5 +1,5 @@
 #!/bin/sh
-# valet-key -- a profile-aware, concurrent-safe launcher for coding agents.
+# valet-key: a profile-aware, concurrent-safe launcher for coding agents.
 #
 # You run `claude` / `gemini` (per-agent SHIMS that symlink to this engine); the
 # engine reads its own invoked name ($0) to pick the agent, resolves which
@@ -18,7 +18,7 @@
 #   valet-key doctor             environment health (PATH, creds, saturation)
 #   valet-key slots <verb> ...   raw slot-pool escape hatch
 #
-# Shims (how `claude`/`gemini` come to route here -- a dir of symlinks to this
+# Shims (how `claude`/`gemini` come to route here: a dir of symlinks to this
 # engine, first on PATH so it shadows the real binary; the pyenv/rbenv pattern):
 #   valet-key shim <agent>...    create shim(s) in the shims dir (intercept)
 #   valet-key unshim <agent>...  remove shim(s)
@@ -62,7 +62,7 @@ SLOTS="$LIBEXEC/slots"
 VALET_KEY_CONFIG=${VALET_KEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}\
 /valet-key}
 DEFAULT_PROFILE=${VALET_KEY_DEFAULT_PROFILE:-personal}
-# Where the shims live -- a dir the user puts FIRST on PATH so a shim shadows
+# Where the shims live: a dir the user puts FIRST on PATH so a shim shadows
 # the real binary (no collision; distinct from ~/.local/bin). An integrator can
 # point this at a dir it already owns first (tackup: ~/bin).
 _shimdef=${XDG_DATA_HOME:-$HOME/.local/share}/valet-key/shims
@@ -74,7 +74,7 @@ die() { echo "valet-key: $*" >&2; exit 1; }
 # check + doctor speak the [OK]/[FAIL]/[WARN]/[IGNORE] MARKER contract: an
 # integrator styles the plain markers in its own palette (tackup's `paint`);
 # standalone at a terminal we colour them ourselves, and stay plain when piped
-# or under NO_COLOR. Self-contained -- the markers are a string convention, not
+# or under NO_COLOR. Self-contained: the markers are a string convention, not
 # a dependency on any integrator's styling code.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   _mke=$(printf '\033')
@@ -130,7 +130,7 @@ load_adapter() {
 }
 
 # config dir for <profile> with this agent. A per-(agent, profile) OVERRIDE in
-# $VALET_KEY_CONFIG/dirs wins ("<agent> <profile> <dir>" lines) -- so an
+# $VALET_KEY_CONFIG/dirs wins ("<agent> <profile> <dir>" lines), so an
 # integrator
 # can pin a dir that must live somewhere specific (a sealed location, or a tool
 # like gemini whose env points at a HOME not a config dir). Else the default:
@@ -154,7 +154,8 @@ pool_id() { printf '%s/%s\n' "$AGENT" "$1"; }   # <agent>/<profile>
 # half a pool id, so it is validated as a DNS label before use: lowercase
 # alphanumeric and hyphen, not leading or trailing, 63 max. A hook returning
 # `../..` would otherwise choose where valet-key writes. Invalid is an ERROR,
-# never a silent fall back to the default -- a mangled profile quietly becoming
+# never a silent fall back to the default, because a mangled profile quietly
+# becoming
 # `personal` would route a WORK agent to the personal account, which is the one
 # direction this must never fail in.
 valid_profile() {   # <name>
@@ -176,7 +177,7 @@ valid_profile() {   # <name>
 #
 # They are irreducibly different: a veto is not a profile name, and a selection
 # cannot say "stop". So there are two seams, and a hook's DIRECTORY says which
-# question it answers -- no verb argument, no dispatch, and no need to answer a
+# question it answers: no verb argument, no dispatch, and no need to answer a
 # question you do not care about. Someone adding "refuse when the VPN is down"
 # writes one executable in guard.d and says nothing about profiles.
 #
@@ -190,7 +191,7 @@ VALET_KEY_HOOKS=${VALET_KEY_HOOKS:-$VALET_KEY_CONFIG/hooks}
 
 # Hooks are iterated by GLOBBING IN PLACE, never by capturing a list and
 # splitting it. `for h in $(list_them)` word-splits, so a hook whose path holds
-# a space becomes several nonexistent paths, each "fails" -- and both seams
+# a space becomes several nonexistent paths, each "fails", and both seams
 # read a failure as a legitimate answer. Selection would take it as "I cannot
 # tell" and move on; a veto that could not run counts as a refusal it never
 # made. Either way the hook is gone and nothing says so, which is the failure
@@ -219,8 +220,8 @@ here_dir() {
 #                        and after all of them, to the cwd table.
 #
 # That distinction is the whole reason the status matters. Without it a
-# provider that KNOWS the answer is the baseline has no way to say so -- it
-# must invent a positive token for the default -- and worse, a BROKEN hook
+# provider that KNOWS the answer is the baseline has no way to say so: it
+# must invent a positive token for the default, and worse, a BROKEN hook
 # becomes indistinguishable from one deliberately saying "baseline", so a
 # failed integration silently re-enables guessing instead of surfacing.
 resolve_profile() {
@@ -253,7 +254,7 @@ resolve_profile() {
         "$_dir"/*)
           # Validated on THIS path too, not just the hook one. The name is
           # about to become a directory component and half a pool id, and a
-          # table is edited by hand -- which makes a stray `../` at least as
+          # table is edited by hand, which makes a stray `../` at least as
           # likely here as from a hook. Skipping the check on one of the two
           # inputs would leave the guard looking present while half the doors
           # were open.
@@ -275,7 +276,7 @@ resolve_profile() {
 # VETO. EVERY hook runs and ANY refusal refuses. That composition is not a
 # style choice: adding a guard must only ever make things stricter, never
 # weaker, or a second guard could silently cancel the first. So the strictest
-# verdict wins -- any 1 refuses, else any 2 warns, else proceed.
+# verdict wins: any 1 refuses, else any 2 warns, else proceed.
 #
 # Exit: 0 ok, 2 warn (print, continue), 1 refuse (print, abort). Anything else
 # is the hook itself failing, and a failing safety check counts as a REFUSAL:
@@ -333,8 +334,8 @@ run_agent() {
 #
 # ONE RULE FOR "WHICH PROFILE". A profile named on the command line is used as
 # given; omitted, it is RESOLVED exactly as a launch here would resolve it.
-# These three used to disagree -- login resolved, provision and check fell back
-# to the default -- so `cd ~/work && valet-key provision claude` provisioned
+# These three used to disagree (login resolved, provision and check fell back
+# to the default), so `cd ~/work && valet-key provision claude` provisioned
 # PERSONAL while `valet-key login` one line later acted on WORK. Nothing said
 # so, and the pool you thought you had built was somewhere else. A tool whose
 # entire job is picking the right account cannot have two answers to where
@@ -380,7 +381,7 @@ m_login() {
 #
 # The tool's entire job is choosing an account, and until this existed the only
 # way to find out which one it had chosen was to LAUNCH THE AGENT and read the
-# announce line off its stderr -- that is, to run the thing you were trying to
+# announce line off its stderr, that is, to run the thing you were trying to
 # check first. Worse, when routing surprised you there was no way to see why.
 #
 # So this shows the working, not just the answer: which hook answered, which
@@ -469,7 +470,7 @@ m_resolve() {
 # The launch path already pulls into the slot it is about to use, so this is
 # the OUTWARD half: valet-key execs the agent and is therefore never around
 # when a session ends to push what that session learned to its siblings. A
-# sweep is how it gets there -- from a provisioning run, a timer, or by hand.
+# sweep is how it gets there: from a provisioning run, a timer, or by hand.
 m_reconcile() {
   load_adapter "${1:-claude}"
   # A POOLLESS agent has exactly one config dir per profile, so there are no
@@ -485,7 +486,7 @@ m_reconcile() {
 }
 
 # check: one pool with an agent arg; with NO args, the whole provisioned setup
-# (every pool). The declarative DRIFT audit -- what provisioning owns and can
+# (every pool). The declarative DRIFT audit: what provisioning owns and can
 # re-fix. Non-zero on any missing pool or structural drift.
 m_check() {
   [ $# -gt 0 ] || { check_all; return; }
@@ -496,7 +497,7 @@ m_check() {
 # stale, across every pool, with the RIGHT adapter loaded for each. The scan
 # reads a per-agent credential file with a per-agent pattern, so doing it in
 # one pass with whatever adapter happened to be loaded last reports "cap
-# unknown" for every other agent -- a silent no-op in the one feature whose
+# unknown" for every other agent, a silent no-op in the one feature whose
 # entire job is to speak up before a slot goes cold.
 m_stale() {
   for _ag in $(list_agents); do
@@ -509,7 +510,7 @@ m_stale() {
 
 # Every profile name valet-key could route to on this box: the default, plus
 # whatever the two config tables name. Deliberately NOT "profiles that have
-# pools" -- the entire point of the caller is to find the ones that do not.
+# pools": the entire point of the caller is to find the ones that do not.
 #
 # A profile can also arrive from a profile.d hook, and those cannot be
 # enumerated: a hook is a program, and asking it what it MIGHT answer is not a
@@ -547,7 +548,7 @@ _check_pool() {   # <id> <base>
   fi
   _r=$(printf '%s' "$_o" | grep -iE 'missing|dangling|drift' | head -1)
   # Strip the library's own prefix, as the OK path does, so the marker names
-  # the pool once rather than twice. Two shapes reach here: "<id> -- <detail>"
+  # the pool once rather than twice. Two shapes reach here: "<id> | <detail>"
   # and "<id> <detail>", so peel the prefix rather than split on a separator
   # one of them does not have.
   _r=${_r#valet-key-slots: }
@@ -572,7 +573,7 @@ check_all() {
   return "$_rc"
 }
 
-# doctor output helpers -- the same [OK]/[FAIL]/[WARN]/[IGNORE] markers as
+# doctor output helpers: the same [OK]/[FAIL]/[WARN]/[IGNORE] markers as
 # check, plus the m_doctor-scoped counters _warn/_fail (dash has no locals; they
 # are plain globals set by m_doctor).
 _dok()   { mk_ok "$1"; }
@@ -588,7 +589,7 @@ _dfix()  { mk_fix "$1"; }
 # It matters because both seams treat failure as a legitimate answer BY DESIGN.
 # A profile hook that exits non-zero means "I cannot tell" and is skipped; a
 # guard that exits non-zero refuses. So a hook broken by its provider renaming
-# a verb keeps "working" in the sense that nothing errors -- while selection
+# a verb keeps "working" in the sense that nothing errors, while selection
 # has silently fallen back to guessing, or every launch is being refused for
 # the wrong reason. That happened.
 #
@@ -611,7 +612,7 @@ _doctor_hooks() {
   # the glob above tests -x, so selection never runs it, guard never does
   # every check below would report "no hooks" while the file sits there
   # looking installed. It is the same failure as the retired path above --
-  # someone believes a boundary is enforced and nothing is reading it -- and
+  # someone believes a boundary is enforced and nothing is reading it, and
   # the likeliest way to reach it, since dropping in a hook and forgetting
   # the chmod is one missed step, not a rename.
   for _d in profile.d guard.d; do
@@ -664,11 +665,11 @@ _doctor_hooks() {
   return 0
 }
 
-# doctor: the ENVIRONMENTAL sweep -- the runtime health valet-key can neither
+# doctor: the ENVIRONMENTAL sweep, the runtime health valet-key can neither
 # provision nor repair (PATH order, leaked API keys, pool saturation, slots near
 # their cap). Read-only, launches nothing; complements `check` (declarative
 # drift) as a readiness probe complements a provisioner. Exits non-zero on a
-# real BREAKAGE -- a shim that does not intercept, or a hook that is not being
+# real BREAKAGE: a shim that does not intercept, or a hook that is not being
 # read or is answering outside its contract. Everything else (a leaked API key,
 # a saturated pool, a slot near its cap) is an advisory and does not.
 m_doctor() {
@@ -721,7 +722,7 @@ m_doctor() {
 
   # A profile you can actually reach, with NO pool behind it. This is the
   # tool's central promise quietly unmet: with no pool, `lease` hands back the
-  # shared base dir, and it does so SILENTLY on the launch path -- so every
+  # shared base dir, and it does so SILENTLY on the launch path, so every
   # session for that profile shares one credentials file exactly as it would
   # if valet-key had never been installed. The logins start knocking each
   # other out again and the tool that was supposed to stop that says nothing.
@@ -744,7 +745,7 @@ m_doctor() {
   done
 
   # Copies of the agent-written shared files that have fallen behind. Not a
-  # breakage -- nothing is broken, the pool just has not converged yet, and a
+  # breakage: nothing is broken, the pool just has not converged yet, and a
   # launch reconciles the slot it uses anyway. Worth surfacing because the
   # symptom (being asked to trust a repo you already trusted) reads as the
   # tool misbehaving rather than as drift.
@@ -845,7 +846,7 @@ case "$_v" in
   shims-dir)  printf '%s\n' "$VALET_KEY_SHIMS_DIR" ;;
   # The usage text IS the header comment: one source of truth, so a verb
   # cannot be added without the help growing a line. Where that comment ENDS
-  # is FOUND, not written down -- the range runs to `set -eu` and then keeps
+  # is FOUND, not written down: the range runs to `set -eu` and then keeps
   # only the comment lines. A hardcoded last-line number is the same fact
   # stored twice, and it drifts the moment anyone adds a line up there, which
   # is exactly what happened when `resolve` was added.

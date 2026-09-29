@@ -6,7 +6,7 @@
 # non-zero exit as "I cannot tell" and quietly falls back to the directory
 # rule, veto reads exit 2 as "warn, then proceed", and a file without the
 # executable bit is skipped without a word. So a hook broken by its provider
-# renaming a verb keeps "working" -- nothing errors -- while whatever it was
+# renaming a verb keeps "working" (nothing errors) while whatever it was
 # enforcing has stopped. That is not hypothetical; it happened.
 #
 # Every check here is GENERIC: it asks only what the contract promises, and
@@ -99,7 +99,7 @@ esac
 # --- a hook nobody remembered to chmod +x ----------------------------------
 # The most reachable version of this seam's worst state: the file is there,
 # it is correct, and it has never once run. Both seams skip a file without the
-# executable bit -- and without this check doctor would report "no hooks" over
+# executable bit, and without this check doctor would report "no hooks" over
 # the top of a guard someone installed to refuse things.
 mkhook "$PD/50-sel" '#!/bin/sh
 echo personal'

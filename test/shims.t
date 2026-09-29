@@ -3,7 +3,7 @@
 #
 # A shim is a symlink named for an agent, pointing at the engine, in a
 # directory the user puts FIRST on PATH. That is the whole mechanism by which
-# typing `claude` reaches valet-key at all -- the pyenv/rbenv/asdf ritual, and
+# typing `claude` reaches valet-key at all: the pyenv/rbenv/asdf ritual, and
 # the busybox multi-call trick on the other end. If shim management is wrong,
 # nothing else in the tool ever runs.
 #
@@ -14,8 +14,8 @@
 # find out.
 #
 # The last section is a drift check on `help`, whose text is the engine's own
-# header comment sliced by line number. That is a good design -- one source of
-# truth, so a verb cannot be added without the help growing a line -- and a
+# header comment sliced by line number. That is a good design: one source of
+# truth, so a verb cannot be added without the help growing a line, and a
 # fragile one, because the slice is a pair of numbers that nothing else
 # validates. Pinning help against the dispatch table turns a silent
 # truncation into a failing test.
@@ -115,14 +115,14 @@ E sh "$VK" rehash >/dev/null 2>&1 || fail "rehash failed"
 out=$(E sh "$VK" init)
 [ "$out" = "export PATH=\"$S:\$PATH\"" ] ||
   fail "init did not print an eval-able PATH line: $out"
-# It has to actually work when eval'd -- that is the documented usage.
+# It has to actually work when eval'd, since that is the documented usage.
 got=$(E sh -c "eval \"\$(sh '$VK' init)\"; printf '%s' \"\${PATH%%:*}\"")
 [ "$got" = "$S" ] || fail "eval \"\$(valet-key init)\" did not lead PATH: $got"
 
 # --- usage text vs the dispatch table ----------------------------------------
 # `help` is the header comment, sliced by line number. Every verb the engine
 # dispatches on must appear in that slice, or someone reading the help has
-# been told the tool is smaller than it is -- and the slice is what silently
+# been told the tool is smaller than it is, and the slice is what silently
 # stops covering the file when a verb is added at the bottom.
 help=$(E sh "$VK" help)
 [ -n "$help" ] || fail "help printed nothing"
