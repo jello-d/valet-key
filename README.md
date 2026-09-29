@@ -38,8 +38,8 @@ way: an IDE plugin and a terminal are two sessions. So is a background job.
 > rotates. An API-key setup carries no such token to collide over.
 
 **valet-key gives each session its own credentials.** A small pool of login
-slots shares your real config back by symlink — the same projects, the same
-settings — while keeping the credentials file private per slot. Sessions stop
+slots shares your real config back by symlink (the same projects, the same
+settings) while keeping the credentials file private per slot. Sessions stop
 clobbering each other. You log into a slot once and stay logged in.
 
 The same design turns a liability into a feature: because each session is
@@ -146,11 +146,11 @@ The pool is the heart of it:
 - **Slots share state, own their login.** Every slot symlinks the account's
   directories (projects, plugins, ...), its user-edited settings, and its
   append-only prompt history back to the real config, so work done in a slot
-  lands in the real account — and up-arrow recall is the same from every slot
+  lands in the real account, and up-arrow recall is the same from every slot
   rather than a different past per slot. Sharing is decided by *can concurrent
   writers corrupt it*, not by who writes it: an append-only log qualifies
   because appends don't conflict. The
-  credentials file is never shared — that is the isolation target — and neither
+  credentials file is never shared (that is the isolation target), and neither
   are runtime lock files, which have to be per-slot or a stalled lock wedges
   every session at once. Anything else a slot writes is simply born there.
 - **Lazy login.** Slots ship cold. The first session to reach a cold slot logs
@@ -162,18 +162,18 @@ The pool is the heart of it:
   liveness and command-name check so PID reuse can't steal a live slot.
   Recycling is serialised per pool: judging a PID dead and then acting on it is
   a read-then-write, and two sessions doing it at once could otherwise land on
-  the same slot — which would put them back on one shared credentials file.
+  the same slot, which would put them back on one shared credentials file.
 - **Graceful overflow.** If every slot is leased, the launch falls back to the
   base config dir. It degrades to today's behaviour; it never fails.
 - **Shared state, without a shared file.** Some things an agent records aren't
-  per-session at all — Claude Code keeps per-project trust, allowed tools and
+  per-session at all: Claude Code keeps per-project trust, allowed tools and
   MCP approvals in `.claude.json`. That file can't be symlinked (the agent
   rewrites it constantly, so sessions would clobber each other), so each slot
   gets its own copy and `valet-key reconcile` converges them across the pool.
   A launch reconciles the slot it's about to use, so you answer "do you trust
   this folder?" once rather than once per slot. The merge is last-writer-wins
-  per project, never a union — otherwise revoking trust on one slot would be
-  quietly undone by a stale copy on another.
+  per project, never a union, because otherwise revoking trust on one slot
+  would be quietly undone by a stale copy on another.
 - **Cap awareness.** Where an agent records an absolute token cap that
   refreshing can't extend, `valet-key stale` surfaces slots nearing it so you
   can re-login first.
@@ -207,24 +207,24 @@ Three diagnostics, split by what they can fix. **`check`** audits the
 whole setup when given no argument; it exits non-zero on drift, including a
 pool smaller than the `N` you last provisioned, or one holding a surplus slot
 that `provision` would have removed. A surplus slot that's warm or in use
-isn't drift — `provision` keeps those on purpose, and a failure you can't
+isn't drift, because `provision` keeps those on purpose, and a failure you can't
 clear by re-provisioning isn't one `check` should raise.
 **`doctor`** sweeps the *live environment* `check` can't touch: whether each
 agent command actually routes through valet-key (the shim wins on `PATH`),
 whether an API key in your shell is shadowing a slot's login, whether a pool
 is saturated (the next launch would overflow to the shared base), whether any
 slot is near its cap, whether a profile you can actually reach has **no pool
-at all** (with none, every session for it shares one credentials file — the
+at all** (with none, every session for it shares one credentials file: the
 original problem, back again, and `check` can't see it because it audits pools
 that exist), and whether the hooks you installed are actually being read. It's
-read-only, and it exits non-zero only on a *breakage* — a shim that doesn't
+read-only, and it exits non-zero only on a *breakage*: a shim that doesn't
 intercept, or a hook that isn't running or is answering outside its contract.
 The rest are advisories, so a red line always means something is broken.
 
 ## Which profile a command acts on
 
 A profile named on the command line is used as given. Omitted, it is
-**resolved from where you are**, exactly as a launch would resolve it — so
+**resolved from where you are**, exactly as a launch would resolve it, so
 `provision`, `check`, `login` and `resolve` run inside a work tree all act on
 the *work* pool. Each of them prints the pool it settled on, because a
 resolution you can't see is one you can't check.
@@ -254,9 +254,9 @@ resolution you can't see is one you can't check.
 Pool size is the `N` argument to `provision` (default `5`), not an env var.
 `provision` **converges** on `N`: re-run it with a smaller number and the
 surplus cold slots are removed, so it is a resize rather than a high-water
-mark. A surplus slot that is leased or warm is kept and reported instead —
-a live session is using the one, and the other holds a login you sat through a
-browser flow for.
+mark. A surplus slot that is leased or warm is kept and reported instead,
+because a live session is using the one, and the other holds a login you sat
+through a browser flow for.
 Size it to your peak concurrent sessions plus a little headroom, and no higher:
 overflow just falls back to the base config, so undersizing is cheap, while
 oversizing backfires two ways. Idle slots still age toward their token cap
@@ -289,7 +289,7 @@ group the process holds. Those change without you moving, and a directory
 cannot express them.
 
 **2. May this launch at all?** The built-in answer is "always". Sometimes a
-launch is *coherent* only under conditions valet-key has no view of — a
+launch is *coherent* only under conditions valet-key has no view of: a
 reachable network, a mounted volume, an identity you hold. Launching anyway
 doesn't fail cleanly; an agent that can't reach something improvises around it.
 
@@ -298,7 +298,7 @@ than one hook answering both. A veto is not a profile name, and a selection
 cannot say "stop". Keeping them separate means a veto-only integration writes
 one file and says nothing about profiles.
 
-A hook's **directory is the verb** — no argument to dispatch on, no case
+A hook's **directory is the verb**: no argument to dispatch on, no case
 statement, nothing to implement for a question you don't care about:
 
 ```
@@ -309,7 +309,7 @@ statement, nothing to implement for a question you don't care about:
   guard.d/20-battery           # warn when unplugged
 ```
 
-Annotated versions of all four ship in `share/hooks/` — copy, chmod +x, edit.
+Annotated versions of all four ship in `share/hooks/`: copy, chmod +x, edit.
 Nothing there is installed.
 
 #### Selection: first to *answer* wins
@@ -320,14 +320,14 @@ did:
 | exit | output | meaning |
 | --- | --- | --- |
 | `0` | a name | that profile; the chain stops |
-| `0` | empty | "definitely the default here" — also an answer, chain stops |
-| non-zero | (ignored) | "I cannot tell" — try the next hook |
+| `0` | empty | "definitely the default here"; also an answer, chain stops |
+| non-zero | (ignored) | "I cannot tell"; try the next hook |
 
 Only non-zero passes along; when every hook abstains, the `profiles` table
 runs. That third row is the one people miss, and it is the reason the status
 carries the meaning rather than the output: a hook that *knows* the answer is
 the baseline can say so, instead of inventing a token for the default. And a
-**broken** hook cannot be mistaken for one that deliberately said "baseline" —
+**broken** hook cannot be mistaken for one that deliberately said "baseline":
 it exits non-zero, which means "cannot tell", so selection moves on instead of
 silently adopting a wrong answer.
 
@@ -337,13 +337,13 @@ decide which is authoritative by naming them.
 #### Veto: any refusal wins
 
 **Every** guard runs, and the strictest verdict decides: any `1` refuses, else
-any `2` warns, else proceed. A guard that cannot run counts as a refusal — a
-safety check that failed has not cleared anything, and failing open is the one
-direction this must not fail.
+any `2` warns, else proceed. A guard that cannot run counts as a refusal,
+because a safety check that failed has not cleared anything, and failing open
+is the one direction this must not fail.
 
 That composition is what makes guards additive. A VPN check and an
 account-boundary check are two files that never mention each other, and adding
-a third can only make things stricter — no hook can cancel another's refusal.
+a third can only make things stricter: no hook can cancel another's refusal.
 Each owns its own message; its stderr passes through to you.
 
 The chosen profile arrives as `$1` and in `$VALET_KEY_PROFILE`; the agent is in
@@ -352,19 +352,19 @@ The chosen profile arrives as `$1` and in `$VALET_KEY_PROFILE`; the agent is in
 #### Where hooks come from
 
 valet-key ships none, and nothing installs any. A hook names tools *your* box
-runs, so it belongs to whoever configures the box — you, or your provisioning
+runs, so it belongs to whoever configures the box: you, or your provisioning
 layer. `valet-key doctor` checks whatever it finds: that selectors answer
 quietly and return a usable name, that guards exit inside the documented
-range, and that every file in a hooks directory is executable — one without
-the bit is skipped in silence by both seams, so it looks installed and has
-never run. It also fails on a leftover `$VALET_KEY_CONFIG/context`, the
+range, and that every file in a hooks directory is executable, because one
+without the bit is skipped in silence by both seams, so it looks installed
+and has never run. It also fails on a leftover `$VALET_KEY_CONFIG/context`, the
 single-file hook these two directories replaced: nothing reads it any more,
 and a file that looks wired while enforcing nothing is the worst state this
 seam has.
 
 > **A guard is a reminder, not a wall.** It reflects and refuses; it does not
-> enforce. If you need a real boundary — say, a zero-data-retention tree one
-> account must never read — enforce it in the OS (ownership, an ACL, a
+> enforce. If you need a real boundary (say, a zero-data-retention tree one
+> account must never read), enforce it in the OS (ownership, an ACL, a
 > namespace) in whatever supplies the hook. valet-key can say *no*; it cannot
 > *be* the lock, and a guard that is the only thing standing between an account
 > and a file is a guard you will eventually route around.
