@@ -38,7 +38,11 @@ finish() {
   [ -z "$bad" ] || {
     printf 'FAIL conventions:%s\n' "$bad" >&2
     printf '\nThese are the house rules in ~/src/CLAUDE.md, "Code style".\n' >&2
-    printf 'A deliberate exception goes in %s.\n' "${EXEMPT#$ROOT/}" >&2
+    # $ROOT is quoted SEPARATELY: inside ${..#..} the right-hand side is a
+    # PATTERN, so an unquoted expansion glob-matches. A repo path holding a
+    # bracket or a `?` then fails to strip and this prints the absolute path
+    # instead of the relative one (SC2295).
+    printf 'A deliberate exception goes in %s.\n' "${EXEMPT#"$ROOT"/}" >&2
     exit 1
   }
 }
