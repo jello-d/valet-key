@@ -138,6 +138,29 @@ d_dash() {   # <file> -> non-empty when a banned dash character is present
 # backslash then (em. It renders as a real em-dash in the man page a user
 # reads. 91 were live across eight repos when this was added; the groff long
 # form, a backslash then [em], is the same thing.
+# Rules 4, 5 and 6 are FILESYSTEM-SHAPE questions: a name, a mode, a shebang.
+# They need no external tool, so they cannot go silent the way 1/2/3/7/8 did.
+# They are still extracted and still proven, because "cannot degrade" is not
+# "cannot be wrong", and the pass line used to admit they were unproven.
+d_libexec() {   # <file> -> non-empty when a *_lib file is executable
+  case $1 in *_lib) [ -x "$1" ] && echo executable ;; esac
+}
+d_barename() {   # <file> -> non-empty when an EXECUTED file keeps a suffix
+  [ -x "$1" ] || return 0
+  [ "$(head -c 2 "$1" 2>/dev/null)" = '#!' ] || return 0
+  case ${1##*/} in
+    setup.sh|module-setup.sh) ;;             # frozen by contract, not ours
+    *.sh|*.py|*.bash|*.pl|*.rb) echo suffixed ;;
+  esac
+}
+d_binmode() {   # <file> -> shebang/exec-bit disagreement in bin/, else empty
+  case $1 in */bin/*|bin/*) ;; *) return 0 ;; esac
+  case $1 in *_lib) return 0 ;; esac        # sourced: rule 4 owns its mode
+  _s=no; [ "$(head -c 2 "$1" 2>/dev/null)" = '#!' ] && _s=yes
+  _x=no; [ -x "$1" ] && _x=yes
+  [ "$_s" = "$_x" ] && return 0
+  [ "$_s" = yes ] && echo unrunnable || echo noshebang
+}
 d_roff() {   # <file> -> non-empty when a roff dash escape is present
   grep -oE '\\[([]e[mn][])]?' "$1" 2>/dev/null | head -1
 }
@@ -148,7 +171,10 @@ d_roff() {   # <file> -> non-empty when a roff dash escape is present
 #
 # WHAT IS PROSE: markdown outside fenced and indented blocks; COMMENT and STRING
 # tokens in Python, via tokenize, because a docstring is prose and scanning only
-# `#` lines missed 139 in one repo; comment lines elsewhere.
+# `#` lines missed 139 in one repo; roff BODY text, where a control line is
+# excluded so `.B --` still bolds a literal dash; and elsewhere a comment
+# line PLUS the quoted parts of a line that prints something, because output is
+# prose the user reads and 85 of those were live in tackup alone.
 # WHAT IS NOT: a `--` inside backticks, an end-of-options marker (`cd --`,
 # `set --`, `printf --`, `grep -qxF --`), a run of three or more (a divider),
 # and a symmetric `-- banner --`.
@@ -163,6 +189,9 @@ import io, re, sys, tokenize
 
 ALLOW = re.compile(r'conventions:\s*allow\s*--')
 DASH  = re.compile(r'(?:(?<=\s)|^)(?<!-)--(?!-)(?=\s|$)')
+OUTCALL = re.compile(r'(^|[;&|(]|\bthen\b|\belse\b|\bdo\b)\s*'
+                     r'(printf|echo|_ok|_bad|_warn|_ignore|_fault|_status|'
+                     r'fail|pass|die|note|say|warn|bad)\b')
 ARGM  = re.compile(r'(^|[;&|(`\s])(cd|set|eval|exec|printf|command|readlink|'
                    r'pgrep|pkill|xargs|install|chown|chmod|rm|cp|mv|grep|sed|'
                    r'awk|find|git|echo|tar|dd|env|test|parted|sgdisk|mkfs|'
@@ -175,7 +204,7 @@ def visible(line):
 
 def banner(line):
     t = line.strip().lstrip('#').strip()
-    return t.startswith('--') and t.endswith('--')
+    return len(t) > 3 and t.startswith('--') and t.endswith('--')
 
 def prose_lines(path):
     """{lineno: text} for the lines that are PROSE in this file's language."""
@@ -205,9 +234,32 @@ def prose_lines(path):
                 continue
             got[n] = l
         return got
-    return {n: m.group(1) for n, m in
-            ((n, re.match(r'^\s*#(.*)$', l)) for n, l in enumerate(lines, 1))
-            if m}
+    if re.search(r'\.[1-8]$', path) or '/man/' in path:
+        # ROFF: a line opening with . or ' is a CONTROL line (a macro; `.B`
+        # legitimately bolds a literal double hyphen), and everything else is
+        # body PROSE, which the `#`-comment branch below would never have seen.
+        # Measured across 9 man pages: zero violations, so this was free.
+        return {n: l for n, l in enumerate(lines, 1)
+                if l[:1] not in ('.', "'")}
+    # A comment line, plus the QUOTED PARTS of a line that PRINTS something. An
+    # output string is prose the user reads, and scanning only comments missed
+    # every one of them: 85 were live in tackup alone. Narrow to a recognised
+    # output call so an ordinary assignment holding a `--` flag stays out.
+    got = {}
+    for n, l in enumerate(lines, 1):
+        m = re.match(r'^\s*#(.*)$', l)
+        if m:
+            got[n] = m.group(1)
+        elif OUTCALL.search(l):
+            # PER SEGMENT, and banners dropped here: joining `"-- tail --"` with
+            # the next argument hides the symmetric shape and reports a divider
+            # as prose. Each quoted string is judged as the string it is.
+            segs = [(a if a is not None else b) for a, b in
+                    re.findall(r'"([^"]*)"|\'([^\']*)\'', l)]
+            keep = [x for x in segs if not banner(x)]
+            if keep:
+                got[n] = ' | '.join(keep)
+    return got
 
 out = []
 for p in open(sys.argv[1]).read().split():
@@ -368,10 +420,25 @@ printf '#!/bin/bash\nexit 0\n'     > "$SELF/good.bash"
 prove 8-bash y "$(d_bashparse "$SELF/bad.bash")"
 prove 8-bash n "$(d_bashparse "$SELF/good.bash")"
 
-# Rules 4, 5 and 6 are pure shell (`case`, `[ -x ]`, `head -c`) with no external
-# tool to go missing, so they cannot degrade this way. They are NOT proven here,
-# and the pass line counts only what is: a logic bug in them is still possible
-# and would need a different kind of test. Said plainly rather than implied.
+# Rules 4, 5 and 6 are FILESYSTEM SHAPE, not a tool, so they cannot go silent
+# the way the five above did. Proven anyway: "cannot degrade" is not "cannot be
+# wrong", and until now the pass line had to admit they were unchecked.
+mkdir -p "$SELF/bin"
+printf '#!/bin/sh\nexit 0\n' > "$SELF/a_lib";   chmod +x "$SELF/a_lib"
+printf '#!/bin/sh\nexit 0\n' > "$SELF/b_lib";   chmod -x "$SELF/b_lib"
+prove 4-libexec y "$(d_libexec "$SELF/a_lib")"
+prove 4-libexec n "$(d_libexec "$SELF/b_lib")"
+
+printf '#!/bin/sh\nexit 0\n' > "$SELF/tool.sh";  chmod +x "$SELF/tool.sh"
+printf '#!/bin/sh\nexit 0\n' > "$SELF/setup.sh"; chmod +x "$SELF/setup.sh"
+prove 5-barename y "$(d_barename "$SELF/tool.sh")"
+prove 5-barename n "$(d_barename "$SELF/setup.sh")"
+
+printf '#!/bin/sh\nexit 0\n' > "$SELF/bin/cmd";  chmod -x "$SELF/bin/cmd"
+printf '#!/bin/sh\nexit 0\n' > "$SELF/bin/ok";   chmod +x "$SELF/bin/ok"
+prove 6-binmode y "$(d_binmode "$SELF/bin/cmd")"
+prove 6-binmode n "$(d_binmode "$SELF/bin/ok")"
+
 
 if [ -n "$bad" ]; then
   printf 'FAIL conventions (SELF-TEST):%s\n' "$bad" >&2
@@ -421,11 +488,10 @@ fi
 # The classifier is the contract. An executable *_lib invites someone to run
 # it, where its bare assignments do nothing and it exits 0 looking successful.
 while IFS= read -r f; do
-  case $f in *_lib) ;; *) continue ;; esac
   # `if`, not `[ ... ] && note`: a false AND-list as the LAST statement in a
   # loop body returns 1 and set -e kills the loop, so the rule would stop
   # checking at the first compliant file and still report green.
-  if [ -x "$f" ]; then
+  if [ -n "$(d_libexec "$f")" ]; then
     note "$f: is executable, but _lib means SOURCED, never run"
   fi
   # A shebang on a sourced file is FINE and deliberately not flagged: editors
@@ -437,13 +503,9 @@ done < "$FILES"
 # does not. A name fixed by a CONTRACT is frozen, whoever set it: setup.sh is
 # this fleet's package contract and module-setup.sh is dracut's module API.
 while IFS= read -r f; do
-  [ -x "$f" ] || continue
-  case $(head -c 2 "$f" 2>/dev/null) in '#!') ;; *) continue ;; esac
-  case ${f##*/} in
-    setup.sh|module-setup.sh) continue ;;
-    *.sh|*.py|*.bash|*.pl|*.rb)
-      note "$f: is EXECUTED, so it takes a bare name (drop the suffix)" ;;
-  esac
+  if [ -n "$(d_barename "$f")" ]; then
+    note "$f: is EXECUTED, so it takes a bare name (drop the suffix)"
+  fi
 done < "$FILES"
 
 # --- 6. IN bin/, THE EXEC BIT AND THE SHEBANG AGREE --------------------------
@@ -461,16 +523,12 @@ done < "$FILES"
 # A rule that flagged all three would be wrong three ways and get ignored. So
 # it asks the narrow question where the answer matters.
 while IFS= read -r f; do
-  case $f in */bin/*|bin/*) ;; *) continue ;; esac
-  case $f in *_lib) continue ;; esac       # sourced: rule 4 owns its mode
-  s=no; [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ] && s=yes
-  x=no; [ -x "$f" ] && x=yes
-  [ "$s" = "$x" ] && continue
-  if [ "$s" = yes ]; then
-    note "$f: in bin/ with a shebang but NOT executable, so it cannot be run"
-  else
-    note "$f: in bin/ and executable but has NO shebang: interpreter is a guess"
-  fi
+  case $(d_binmode "$f") in
+    unrunnable)
+      note "$f: in bin/ with a shebang but NOT executable: it cannot run" ;;
+    noshebang)
+      note "$f: in bin/, executable, NO shebang: a guessed interpreter" ;;
+  esac
 done < "$FILES"
 
 # --- 7. NO EM-DASHES, in prose, comments and docs alike ----------------------
