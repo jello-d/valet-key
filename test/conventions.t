@@ -108,45 +108,41 @@ while IFS= read -r f; do
 done < "$FILES"
 touch "$FILES.sh" "$FILES.bash" "$FILES.py"
 
-# --- 1. 80 COLUMNS, the hard rule --------------------------------------------
-# awk counts CHARACTERS, which is what the limit means.
-while IFS= read -r f; do
-  w=$(awk 'length > 80 { printf "%d ", FNR }' "$f")
-  [ -z "$w" ] || note "$f: over 80 columns at line(s): $w"
-done < "$FILES"
-
-# --- 2. NEVER TABS, where the language does not demand them ------------------
-# Go and Make are the only two that get tabs, and only because gofmt emits them
-# and a make recipe line is REQUIRED to open with one. Indentation only: a tab
-# inside a string or a printf format is data.
-while IFS= read -r f; do
-  case $(lang_of "$f") in go|make) continue ;; esac
-  t=$(grep -cP '^[ ]*\t' "$f" 2>/dev/null || true)
-  [ "${t:-0}" -eq 0 ] || note "$f: $t line(s) indented with a TAB"
-done < "$FILES"
-
-# --- 3. PYTHON INDENTS IN STEPS OF EXACTLY 4 ---------------------------------
-# It cannot be written as "the indent is even": 4 gives 4, 8, 12, and so does a
-# 2-space file at depth 2. The invariant is the STEP, so walk the INDENT tokens
-# and require each new level to be exactly 4 deeper than the one enclosing it.
-# Continuation lines are NOT covered: they produce no INDENT token and may
-# align to their opening bracket, which is the formatter's call and not ours.
-# THE SKIP ANNOUNCES ITSELF, and the pass line below stops counting Python
-# when it fires. Guarded on python3 and silent, this rule did NOTHING on a box
-# without it while the summary still said "N python", asserting coverage that
-# never happened: a planted 2-space indent gave rc=1 with python3, and rc=0
-# plus "ok conventions (30 files, 10 shell, 10 python)" without it. That is the
-# `|| continue` shape from tackup's Gotchas, in the shared checker itself. A
-# skipped rule must be VISIBLE, so it says so and the summary stops claiming it.
-PY_OK=yes
-if [ -s "$FILES.py" ] && ! command -v python3 >/dev/null 2>&1; then
-  PY_OK=no
-  printf 'skip conventions/python-indent (no python3, %s file(s) unchecked)\n' \
-    "$(wc -l < "$FILES.py")" >&2
-fi
-if [ -s "$FILES.py" ] && [ "$PY_OK" = yes ]; then
-  out=$(python3 - "$FILES.py" <<'PY'
-import io, sys, tokenize
+# --- the detectors ----------------------------------------------------------
+# ONE implementation each, called by the rule below AND by the self-test at the
+# bottom. Written as functions for exactly that reason: a self-test carrying its
+# own copy of a pattern is two patterns free to drift, which is the duplication
+# this file exists to remove.
+#
+# Each echoes its finding and echoes NOTHING when the file is clean, so "did the
+# detector fire" is a test of emptiness in both directions.
+d_cols() {   # <file> -> line numbers over 80 columns
+  awk 'length > 80 { printf "%d ", FNR }' "$1"
+}
+d_tabs() {   # <file> -> count of TAB-indented lines (0 when clean)
+  grep -cP '^[ ]*\t' "$1" 2>/dev/null || true
+}
+# The banned set is every dash a writer reaches for INSTEAD of punctuation, not
+# only the two that turned up first: figure dash, en, em, horizontal bar, the
+# two- and three-em dashes, the non-breaking hyphen, the fullwidth hyphen, the
+# MINUS SIGN (identical to an em-dash in a comment) and the SOFT HYPHEN,
+# invisible and so the worst of them. Measured across all 15 repos: no text file
+# holds any of these beyond U+2014/U+2013, so widening costs nothing today and
+# closes the hole before someone pastes one in.
+DASHES='\x{00AD}|\x{2010}|\x{2011}|\x{2012}|\x{2013}|\x{2014}'
+DASHES="$DASHES|\x{2015}|\x{2212}|\x{2E3A}|\x{2E3B}|\x{FF0D}"
+d_dash() {   # <file> -> non-empty when a banned dash character is present
+  grep -oP "$DASHES" "$1" 2>/dev/null | head -1
+}
+d_shparse() {   # <file> -> non-empty when it does NOT parse as POSIX sh
+  dash -n "$1" >/dev/null 2>&1 || echo failed
+}
+d_bashparse() {   # <file> -> non-empty when it does NOT parse as bash
+  bash -n "$1" >/dev/null 2>&1 || echo failed
+}
+d_pyindent() {   # <file-list> -> one line per Python indent-step violation
+  python3 - "$1" <<'PY'
+import sys, tokenize
 bad = []
 for p in open(sys.argv[1]).read().split():
     stack = [0]
@@ -165,7 +161,132 @@ for p in open(sys.argv[1]).read().split():
         bad.append("%s: will not tokenize: %s" % (p, e))
 print("\n".join(bad))
 PY
-  ) || out='python3 failed to run the indent check'
+}
+
+# --- the detectors are PROVEN TO FIRE, every run -----------------------------
+# Every rule above can only report what its detector detects, and four of them
+# lean on an external tool that may be missing or built without a feature:
+# grep -P needs PCRE, rule 3 needs python3, rule 8 needs dash and bash. EVERY
+# ONE OF THOSE DEGRADED TO SILENCE. Measured, before this section existed:
+#
+#   python3 hidden      a planted 2-space Python indent -> rc=0, "10 python"
+#   grep without -P     a tabbed line -> count empty -> read as 0 tabs
+#   grep without -P     a real em-dash -> rule 7 never fires
+#   dash absent         a file that does not parse -> reported clean
+#
+# A missing tool is therefore NOT tiptoed around, and not announced and skipped
+# either: each detector is run here against a sample that MUST trip it and a
+# sample that must NOT, and a detector that fails either way fails the suite.
+# That is the whole no-blind-spot property, and it costs one temp dir per run.
+#
+# IT RUNS FIRST AND IT IS FATAL. With dash removed, the rules below happily
+# reported "setup.sh: does not parse as POSIX sh" about three perfectly good
+# files: a tool that cannot start has made no finding, and a message must not
+# say otherwise (the same false claim tackup's tackdisk test once made about
+# the disk layout). So this gate closes before any rule speaks.
+#
+# BOTH DIRECTIONS, because a detector wedged ON is as useless as one wedged off:
+# it would bury every real finding in noise until someone stopped reading.
+SELF=$(mktemp -d)
+# ONE trap covering both, replacing the corpus trap above rather than sitting
+# beside it: POSIX sh has no trap stack, so a second `trap ... EXIT` would
+# silently discard the first and leak $FILES on every run.
+trap 'rm -f "$FILES" "$FILES.sh" "$FILES.bash" "$FILES.py"; rm -rf "$SELF"' EXIT
+NPROVEN=0
+prove() {   # <name> <expect-hit: y|n> <finding>
+  case $2 in
+    y) [ -n "$3" ] || { note "SELF-TEST: the $1 detector did not fire on a
+  planted violation, so rule $1 above is not enforcing anything"; return; } ;;
+    n) [ -z "$3" ] || { note "SELF-TEST: the $1 detector fired on a CLEAN
+  sample ('$3'), so every finding it reports above is suspect"; return; } ;;
+  esac
+  NPROVEN=$((NPROVEN + 1))
+}
+
+# printf, NOT awk: `awk 'BEGIN{..}END{..}'` with no file argument reads STDIN
+# and waits forever, which hung this section the first time it ran. A test that
+# BLOCKS is worse than one that fails, so nothing here reads stdin.
+printf '%090d\n' 0 > "$SELF/long"
+printf 'short line\n' > "$SELF/short"
+prove 1-columns y "$(d_cols "$SELF/long")"
+prove 1-columns n "$(d_cols "$SELF/short")"
+
+printf '\tindented with a tab\n' > "$SELF/tabbed"
+printf '  indented with spaces\n' > "$SELF/spaced"
+t=$(d_tabs "$SELF/tabbed");  [ "${t:-0}" -gt 0 ] && t=hit || t=
+prove 2-tabs y "$t"
+t=$(d_tabs "$SELF/spaced");  [ "${t:-0}" -gt 0 ] && t=hit || t=
+prove 2-tabs n "$t"
+
+printf 'def f():\n  return 1\n' > "$SELF/bad.py"
+printf 'def f():\n    return 1\n' > "$SELF/good.py"
+printf '%s\n' "$SELF/bad.py"  > "$SELF/pylist.bad"
+printf '%s\n' "$SELF/good.py" > "$SELF/pylist.good"
+prove 3-python y "$(d_pyindent "$SELF/pylist.bad")"
+prove 3-python n "$(d_pyindent "$SELF/pylist.good")"
+
+# Built with printf from the codepoint so this file holds no banned character
+# itself, which would make it fail its own rule 7.
+printf 'an \342\200\224 em dash\n' > "$SELF/dashy"
+printf 'an ordinary - hyphen\n'      > "$SELF/clean"
+prove 7-dashes y "$(d_dash "$SELF/dashy")"
+prove 7-dashes n "$(d_dash "$SELF/clean")"
+
+printf '#!/bin/sh\nif then fi\n' > "$SELF/bad.sh"
+printf '#!/bin/sh\nexit 0\n'     > "$SELF/good.sh"
+prove 8-sh y "$(d_shparse "$SELF/bad.sh")"
+prove 8-sh n "$(d_shparse "$SELF/good.sh")"
+printf '#!/bin/bash\nif then fi\n' > "$SELF/bad.bash"
+printf '#!/bin/bash\nexit 0\n'     > "$SELF/good.bash"
+prove 8-bash y "$(d_bashparse "$SELF/bad.bash")"
+prove 8-bash n "$(d_bashparse "$SELF/good.bash")"
+
+# Rules 4, 5 and 6 are pure shell (`case`, `[ -x ]`, `head -c`) with no external
+# tool to go missing, so they cannot degrade this way. They are NOT proven here,
+# and the pass line counts only what is: a logic bug in them is still possible
+# and would need a different kind of test. Said plainly rather than implied.
+
+if [ -n "$bad" ]; then
+  printf 'FAIL conventions (SELF-TEST):%s\n' "$bad" >&2
+  echo >&2
+  echo 'A detector above is not working, so NOTHING ELSE RAN: every rule' >&2
+  echo 'below would report clean whether the tree is clean or not. Fix the' >&2
+  echo 'tool (grep needs -P/PCRE, rule 3 needs python3, rule 8 needs dash' >&2
+  echo 'and bash) rather than reading the result.' >&2
+  exit 1
+fi
+
+# --- 1. 80 COLUMNS, the hard rule --------------------------------------------
+# awk counts CHARACTERS, which is what the limit means.
+while IFS= read -r f; do
+  w=$(d_cols "$f")
+  [ -z "$w" ] || note "$f: over 80 columns at line(s): $w"
+done < "$FILES"
+
+# --- 2. NEVER TABS, where the language does not demand them ------------------
+# Go and Make are the only two that get tabs, and only because gofmt emits them
+# and a make recipe line is REQUIRED to open with one. Indentation only: a tab
+# inside a string or a printf format is data.
+while IFS= read -r f; do
+  case $(lang_of "$f") in go|make) continue ;; esac
+  t=$(d_tabs "$f")
+  [ "${t:-0}" -eq 0 ] || note "$f: $t line(s) indented with a TAB"
+done < "$FILES"
+
+# --- 3. PYTHON INDENTS IN STEPS OF EXACTLY 4 ---------------------------------
+# It cannot be written as "the indent is even": 4 gives 4, 8, 12, and so does a
+# 2-space file at depth 2. The invariant is the STEP, so walk the INDENT tokens
+# and require each new level to be exactly 4 deeper than the one enclosing it.
+# Continuation lines are NOT covered: they produce no INDENT token and may
+# align to their opening bracket, which is the formatter's call and not ours.
+# NO SKIP, AND NO GUARD. python3 is REQUIRED, asserted by the self-test at the
+# bottom rather than tiptoed around here. Guarded on `command -v python3` and
+# silent, this rule did NOTHING on a box without it while the summary still said
+# "N python": a planted 2-space indent gave rc=1 with python3 and rc=0 plus a
+# green line without it. Announcing the skip was an improvement and still a
+# compromise, because a rule that may not run is a rule you cannot rely on.
+if [ -s "$FILES.py" ]; then
+  out=$(d_pyindent "$FILES.py") || out='python3 failed to run the indent check'
   [ -z "$out" ] || note "$(printf '%s' "$out" | sed 's/^/  /')"
 fi
 
@@ -226,10 +347,13 @@ while IFS= read -r f; do
 done < "$FILES"
 
 # --- 7. NO EM-DASHES, in prose, comments and docs alike ----------------------
+# The character half of the rule. The `--` half (a double hyphen standing in for
+# an em-dash) is not here YET: it needs prose-versus-code discrimination that
+# POSIX ERE cannot express, so it lands as embedded Python beside rule 3 once
+# every repo is at zero. See _common.md, the no-em-dash bullet.
 while IFS= read -r f; do
-  if grep -qP '\x{2014}|\x{2013}' "$f" 2>/dev/null; then
-    note "$f: contains an em- or en-dash"
-  fi
+  d=$(d_dash "$f")
+  [ -z "$d" ] || note "$f: contains a dash character used as punctuation"
 done < "$FILES"
 
 # --- 8. EVERY SHELL FILE PARSES, UNDER ITS OWN INTERPRETER -------------------
@@ -239,16 +363,15 @@ done < "$FILES"
 # reports a syntax error in perfectly good code (hwdp/bin/run-scaled, the
 # first file this ever ran on). Judging a file by a dialect it never claimed
 # is how a check earns being ignored.
-if command -v dash >/dev/null 2>&1; then
-  while IFS= read -r f; do
-    dash -n "$f" 2>/dev/null || note "$f: does not parse as POSIX sh"
-  done < "$FILES.sh"
-fi
-if command -v bash >/dev/null 2>&1; then
-  while IFS= read -r f; do
-    bash -n "$f" 2>/dev/null || note "$f: does not parse as bash"
-  done < "$FILES.bash"
-fi
+# NO `command -v` GUARD, for the reason rule 3 lost its one: with dash absent
+# this whole rule skipped in silence, so a file that does not parse read as
+# clean. The interpreters are required and the self-test proves they work.
+while IFS= read -r f; do
+  [ -z "$(d_shparse "$f")" ] || note "$f: does not parse as POSIX sh"
+done < "$FILES.sh"
+while IFS= read -r f; do
+  [ -z "$(d_bashparse "$f")" ] || note "$f: does not parse as bash"
+done < "$FILES.bash"
 
 # --- the check is not vacuous ------------------------------------------------
 # DERIVED, not a floor. Every rule above draws from $FILES, so if the corpus
@@ -262,10 +385,5 @@ if [ "$tracked" -gt 20 ] && [ "$N" -lt 5 ]; then
 fi
 
 finish
-# The Python count is claimed ONLY when the Python rule actually ran; see the
-# announce-the-skip note at rule 3. Reporting a corpus a rule never read is how
-# a green summary outlives the coverage it describes.
-if [ "$PY_OK" = yes ]; then _py=" $(wc -l < "$FILES.py") python"
-else _py=" python SKIPPED"; fi
 pass "$N files, $(( $(wc -l < "$FILES.sh") + $(wc -l < "$FILES.bash") ))\
- shell,$_py"
+ shell, $(wc -l < "$FILES.py") python, $NPROVEN detectors proven"
