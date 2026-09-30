@@ -27,13 +27,13 @@ agent is exec'd.
 You do not normally type
 .BR valet-key .
 You install per-agent
-.B shims
-\(em symlinks named
+.B shims:
+symlinks named
 .BR claude ,
 .BR codex ,
 .BR gemini ,
 .RB \&... \" ...
-that point at the engine \(em and put the shims directory first on
+that point at the engine, and put the shims directory first on
 .BR PATH .
 The engine reads its own invoked name
 .RB ( $0 )
@@ -52,8 +52,8 @@ coherence (proceed, warn, or refuse) before launching;
 .B lease
 a private credential slot from the profile's pool (pooled agents only; a
 poolless agent uses the profile's directory directly), so concurrent sessions
-never share one rotating refresh token. A WARM slot \(em one that already
-holds a login \(em is preferred over a cold one, with slot order breaking
+never share one rotating refresh token. A WARM slot (one that already holds a
+login) is preferred over a cold one, with slot order breaking
 ties: the pool exists to keep you signed in, so handing out a cold slot while
 a warm one sits idle would cost a login for nothing;
 .IP 4. 3
@@ -63,11 +63,11 @@ the real agent with the slot as its config directory.
 The concurrency problem it solves: some agents keep a single credentials file
 whose OAuth refresh token is single-use and rotates on every refresh. Two
 sessions sharing it invalidate each other, forcing periodic re-logins. A pool
-of thin slot directories \(em each sharing the account's state but owning a
-private, independently-logged-in credentials file \(em removes the race. An
+of thin slot directories (each sharing the account's state but owning a
+private, independently-logged-in credentials file) removes the race. An
 agent whose refresh token is stable, or which uses no rotating credential, is
-.B poolless
-\(em valet-key gives it profile isolation without a pool.
+.B poolless:
+valet-key gives it profile isolation without a pool.
 .SH COMMANDS
 .SS Running
 .TP
@@ -84,15 +84,15 @@ Create or refresh a slot pool of
 .I N
 slots (default 5) for
 .IR agent / profile .
-Slots ship cold \(em the login is lazy; the first session to reach a cold slot
+Slots ship cold: the login is lazy; the first session to reach a cold slot
 logs in once.
 .IP
 It CONVERGES on
 .IR N ,
 creating what is missing and removing what is surplus, so re-running it is a
 resize rather than a high-water mark. A surplus slot that is LEASED or WARM is
-kept rather than discarded \(em a live session is using the one, and the other
-holds a login someone sat through a browser flow for \(em and what could not
+kept rather than discarded (a live session is using the one, and the other
+holds a login someone sat through a browser flow for) and what could not
 be removed is reported.
 .I N
 is recorded in the pool, which is what lets
@@ -158,7 +158,7 @@ reports which copies are behind and exits non-zero, changing nothing.
 Some state an agent keeps is not per-session at all. Claude Code records
 per-project trust, allowed tools and MCP approvals in
 .IR .claude.json ,
-which is a PRIVATE COPY per slot \(em it has to be, because the agent
+which is a PRIVATE COPY per slot: it has to be, because the agent
 rewrites it constantly and sessions sharing one file would interleave
 read-modify-write. The consequence is that the same repository asks to be
 trusted again on every slot it has not been opened in, and a newly provisioned
@@ -173,13 +173,13 @@ An entry competes only if it CHANGED since the pool last agreed, which the
 reconciler records for itself. File mtime cannot serve as that clock: it says
 when ANY part of a file changed, so a slot with a live session bumping a
 counter becomes "newest" for every project it holds, including ones it has
-never been opened in \(em and its untouched stub would overwrite another
+never been opened in, and its untouched stub would overwrite another
 slot's real grant. Being in a recently-written file is not a claim to know
 anything. Where nobody changed a project, the agreed value stands.
 .IP
 It is NOT a union. Trust and allowed tools live inside a project entry, so
 unioning them would mean that revoking trust, or removing a tool, gets
-silently restored from a stale copy \(em a mechanism that resurrects revoked
+silently restored from a stale copy: a mechanism that resurrects revoked
 permissions is worse than the problem it solves. A revocation is a change, so
 it competes and wins; entries are taken whole, and the union is only ACROSS
 projects. Only when two members changed the SAME project does mtime break the
@@ -193,9 +193,9 @@ Only a POOLED agent can have this problem at all: a poolless one has a single
 config directory per profile, so there are no copies to diverge, and this verb
 says so rather than reporting a missing pool. A pooled agent that declares no
 .B ADAPTER_MERGE_FILES
-is likewise a clean no-op \(em that is how an agent opts out.
+is likewise a clean no-op: that is how an agent opts out.
 .IP
-A launch reconciles the WHOLE pool, not just the slot it takes \(em which is
+A launch reconciles the WHOLE pool, not just the slot it takes, which is
 what makes a simultaneous cohort work. Resuming a multiplexer session brings
 every agent up at once, so none can learn from the others during its own
 startup; each converging the entire partition leaves the pool consistent from
@@ -219,8 +219,8 @@ if a guard would refuse, so
 means what it looks like.
 .IP
 Without it the only way to learn which account a directory routes to was to
-launch the agent and read the announce line off its standard error \(em to run
-the thing you were trying to check first \(em and a surprising answer had
+launch the agent and read the announce line off its standard error (to run the
+thing you were trying to check first) and a surprising answer had
 nothing to inspect.
 .TP
 .B valet-key doctor
@@ -232,7 +232,7 @@ slot's login), that no pool is saturated (every slot leased, so the next launch
 overflows to the shared base), that no warm slot is near its OAuth cap, that
 no profile you can actually reach is running WITHOUT a pool (with none, every
 session for it shares one credentials file, exactly as if valet-key were not
-installed \(em and
+installed, and
 .B check
 cannot see this, because it audits pools that exist), and that the installed
 no pool's shared state has fallen out of step across its slots (see
@@ -240,7 +240,7 @@ no pool's shared state has fallen out of step across its slots (see
 and that the installed
 hooks are actually being read and are answering inside their contract (see
 .BR "THE HOOK SEAMS" ).
-Exits non-zero only on a BREAKAGE \(em a shim that does not intercept, or a
+Exits non-zero only on a BREAKAGE: a shim that does not intercept, or a
 hook that is not running or is out of contract; the rest are advisories, so a
 red line always means something is broken. Complements
 .B check
@@ -264,8 +264,8 @@ scan can only be right for one agent at a time); and
 takes no arguments.
 .IP
 This verb does NOT load the agent's adapter. Everything the library needs
-beyond those arguments \(em which file to isolate, which to share, which
-process name identifies a live holder \(em normally arrives from the adapter
+beyond those arguments (which file to isolate, which to share, which process
+name identifies a live holder) normally arrives from the adapter
 through the environment, so a bare
 .B slots
 call silently falls back to the built-in defaults, which are Claude Code's. On
@@ -274,7 +274,7 @@ counts. Use it for debugging, and prefer the wrapping commands.
 .SS Shims
 .TP
 .B valet-key shim \fIagent\fR ...
-Create a shim for each named agent in the shims directory \(em a symlink to the
+Create a shim for each named agent in the shims directory: a symlink to the
 engine, so invoking that name routes here. Warns if the shims directory is not
 first on
 .BR PATH .
@@ -339,11 +339,11 @@ line in
 .IR $VALET_KEY_CONFIG/dirs ,
 overriding the
 .RI < base >- P
-default \(em for a config dir that must live at a specific path, or a tool
+default, for a config dir that must live at a specific path, or a tool
 whose environment variable points at a home rather than a config directory.
 .SH WHICH PROFILE
 A profile named on the command line is used as given. OMITTED, it is RESOLVED
-exactly as a launch from the same directory would resolve it \(em so
+exactly as a launch from the same directory would resolve it, so
 .B provision
 .RI ( check ", " login ", " resolve )
 run inside a work tree act on the WORK pool.
@@ -358,7 +358,7 @@ fell back to the default profile. So
 .RB ' "cd ~/work && valet-key provision claude" '
 built the PERSONAL pool while
 .RB ' "valet-key login" '
-one line later acted on WORK, and nothing said so \(em the pool you thought
+one line later acted on WORK, and nothing said so: the pool you thought
 you had made was somewhere else. A tool whose whole job is choosing an account
 cannot hold two answers to where "here" is.
 .PP
@@ -367,10 +367,10 @@ pool it settled on. Resolution you cannot see is resolution you cannot check;
 .B valet-key resolve
 shows the reasoning behind it.
 .PP
-A profile name is validated as a DNS label wherever it enters \(em from a
+A profile name is validated as a DNS label wherever it enters: from a
 hook, from the
 .I profiles
-table, or from the command line \(em because it becomes a directory component
+table, or from the command line, because it becomes a directory component
 and half a pool id on every one of those paths. An invalid one is an error,
 never a silent fall back to the default.
 .SH THE HOOK SEAMS
@@ -393,7 +393,7 @@ SELECTION. Each runs until one ANSWERS. Exit
 .B 0
 printing a name selects that profile; exit
 .B 0
-printing NOTHING is also an answer \(em "definitely the default here" \(em and
+printing NOTHING is also an answer ("definitely the default here") and
 stops the chain; a NON-ZERO exit means "I cannot tell" and passes to the next
 hook. Only that last case falls through, and after every hook abstains the
 directory table runs.
@@ -416,26 +416,26 @@ to proceed,
 to warn and continue,
 .B 1
 to refuse and abort. Anything else is the hook failing, and counts as a
-REFUSAL \(em a safety check that could not run has not cleared anything. The
+REFUSAL: a safety check that could not run has not cleared anything. The
 hook owns the message (its standard error passes through).
 .IP
 Any-refusal-wins is not a style choice: adding a guard must only ever make
 things stricter, or a second guard could silently cancel the first. That is
-what lets two unrelated vetoes \(em a boundary and a VPN check \(em compose
+what lets two unrelated vetoes (a boundary and a VPN check) compose
 without either knowing the other exists.
 .PP
 A hook is only consulted if it is EXECUTABLE; a file without the bit is
 skipped in silence by both seams.
 .B doctor
-reports one as a failure for that reason \(em it looks installed, and it has
+reports one as a failure for that reason: it looks installed, and it has
 never run.
 .PP
 valet-key ships NO hooks and needs none: with none installed it runs a single
 .I personal
 profile, consults
 .I profiles
-if you wrote one, and refuses nothing. Annotated examples \(em routing by git
-remote or kube context, refusing on a downed VPN, warning on battery \(em are
+if you wrote one, and refuses nothing. Annotated examples (routing by git
+remote or kube context, refusing on a downed VPN, warning on battery) are
 in
 .IR <share>/hooks/ ,
 to copy and edit. Nothing there is installed, and none of it is about any
@@ -448,8 +448,8 @@ a profile maps to config; the seams say
 profile and
 .I whether it is allowed.
 A guard is a reminder, not a wall: it reflects and refuses but does not
-enforce. A real boundary belongs in the OS \(em ownership, an ACL, a namespace
-\(em in whatever supplies the hook. valet-key can say no; it cannot BE the
+enforce. A real boundary belongs in the OS (ownership, an ACL, a namespace) in
+whatever supplies the hook. valet-key can say no; it cannot BE the
 lock.
 .SH ADAPTERS
 An adapter is a shell fragment under
@@ -470,7 +470,7 @@ reconciled by
 .IR libexec/merge/<agent> ),
 the command-name fragment that identifies a live lease holder
 .RB ( ADAPTER_PROC_MATCH ,
-required on a pooled agent \(em without it any process at all looks like a
+required on a pooled agent, without it any process at all looks like a
 live holder, and a lease could be reclaimed from a running session after a
 PID is reused),
 the login and cap knobs
@@ -495,7 +495,7 @@ are pooled (single-use OAuth token);
 .B gemini
 is poolless (stable token, profile isolation only); and
 .B gcloud
-is poolless too \(em a non-agent identity CLI, showing valet-key generalizes
+is poolless too: a non-agent identity CLI, showing valet-key generalizes
 beyond coding agents.
 .SH ENVIRONMENT
 .TP
@@ -585,8 +585,8 @@ if a guard would refuse it.
 .B 0
 unless a real breakage was found (an agent command that does not route through
 valet-key, a retired hook file still in place, a hook that is not being read
-or is out of contract).  Warnings \(em a leaked API key, a saturated pool, a
-profile with no pool, a slot near its cap \(em are advisories and do not
+or is out of contract).  Warnings (a leaked API key, a saturated pool, a
+profile with no pool, a slot near its cap) are advisories and do not
 change the status.
 .TP
 .B setup.sh check
@@ -607,9 +607,9 @@ library exits
 on an unknown verb.
 .SH OUTPUT
 .BR check ", " doctor ", and " setup.sh
-speak a plain MARKER contract \(em lines beginning
-.BR [OK] ", " [FAIL] ", " [WARN] ", or " [IGNORE]
-\(em so an integrator can restyle them in its own palette while folding the
+speak a plain MARKER contract: lines beginning
+.BR [OK] ", " [FAIL] ", " [WARN] ", or " [IGNORE],
+so an integrator can restyle them in its own palette while folding the
 exit status into its own report. Standalone at a terminal valet-key colours
 them itself; piped, or under
 .BR NO_COLOR ,
@@ -643,7 +643,7 @@ config document is not shell work. An agent with no helper simply has no
 reconciliation.
 .TP
 .I libexec/adapter_lib
-Helpers shared by every adapter, sourced before them \(em notably the real-
+Helpers shared by every adapter, sourced before them: notably the real-
 binary lookup, so the
 .BI < AGENT >_BIN
 check and the never-return-the-shim rule have one implementation rather than
@@ -740,7 +740,7 @@ Each slot is a thin view of that profile's base config: subdirectories and the
 adapter's
 .B ADAPTER_STATIC_FILES
 are SYMLINKS back to the base, so work done in a slot lands in the real
-account \(em that set includes an APPEND-ONLY log such as
+account: that set includes an APPEND-ONLY log such as
 .IR history.jsonl ,
 because the rule for sharing is not "who writes it" but "can concurrent
 writers corrupt it", and appends do not conflict. A file moving from private
@@ -751,7 +751,7 @@ The
 are private copies carrying no token; the
 .B ADAPTER_CRED_FILE
 is private and never seeded, which is the whole point; and lock files are
-private too \(em a shared lock would let one slot's stalled token refresh
+private too: a shared lock would let one slot's stalled token refresh
 wedge every session at once.
 .SH EXAMPLES
 Set up standalone with two profiles:
