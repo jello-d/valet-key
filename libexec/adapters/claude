@@ -20,7 +20,7 @@ ADAPTER_CRED_FILE=.credentials.json
 #
 # Left private it fragments: each slot recalls only what it happened to type,
 # so up-arrow returns a different past depending on which slot you drew. That
-# is a side effect of pooling, and sharing the file removes it exactly --
+# is a side effect of pooling, and sharing the file removes it exactly,
 # restoring the one-file behaviour you would have without a pool.
 ADAPTER_STATIC_FILES='settings.json settings.local.json CLAUDE.md history.jsonl'
 ADAPTER_SEED_FILES=.claude.json
@@ -51,7 +51,7 @@ adapter_realbin() {
     /usr/local/bin/claude
 }
 
-# Launch-time environment. Claude via apt lags and nags about updates -- silence
+# Launch-time environment. Claude via apt lags and nags about updates; silence
 # it. (ANTHROPIC_API_KEY is scrubbed via ADAPTER_UNSET_ENV, honoured by both the
 # exec path and `valet-key login`.)
 adapter_preexec() {

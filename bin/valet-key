@@ -402,10 +402,10 @@ m_resolve() {
     _c=$("$SLOTS" counts "$(pool_id "$_prof")" 2>/dev/null || echo "0 0 0")
     _t=${_c%% *}; _r=${_c#* }; _cw=${_r%% *}; _l=${_r##* }
     if [ "$_t" -gt 0 ]; then
-      printf '  pool     %s -- %s slots, %s warm, %s leased\n' \
+      printf '  pool     %s: %s slots, %s warm, %s leased\n' \
         "$(pool_id "$_prof")" "$_t" "$_cw" "$_l"
     else
-      printf '  pool     %s -- NONE (this session would share the base dir)\n' \
+      printf '  pool     %s: NONE (this session would share the base dir)\n' \
         "$(pool_id "$_prof")"
     fi
   else
@@ -477,7 +477,7 @@ m_reconcile() {
   # copies to diverge and nothing here to do. Saying "no pool" would read as
   # drift; this is the design working.
   if [ "${ADAPTER_SLOTS:-0}" != 1 ]; then
-    echo "valet-key: $AGENT is poolless -- one config dir, nothing to reconcile"
+    echo "valet-key: $AGENT is poolless: one config dir, nothing to reconcile"
     return 0
   fi
   _prof=$(resolve_pool "${2:-}")
@@ -611,7 +611,7 @@ _doctor_hooks() {
   # A file sitting in a hooks dir WITHOUT the executable bit is invisible:
   # the glob above tests -x, so selection never runs it, guard never does
   # every check below would report "no hooks" while the file sits there
-  # looking installed. It is the same failure as the retired path above --
+  # looking installed. It is the same failure as the retired path above,
   # someone believes a boundary is enforced and nothing is reading it, and
   # the likeliest way to reach it, since dropping in a hook and forgetting
   # the chmod is one missed step, not a rename.

@@ -171,7 +171,7 @@ has "$out" 'claude: $ANTHROPIC_API_KEY is set' "the leak named the wrong var"
 
 # Adapter state must not bleed between agents in one sweep. doctor loads every
 # adapter in turn, and a knob one agent sets legitimately (claude's
-# ANTHROPIC_API_KEY) must not be inherited by the next one that omits it --
+# ANTHROPIC_API_KEY) must not be inherited by the next one that omits it,
 # which would report a leak against an agent that has nothing to do with the
 # variable, from a single real one. Adapters load in name order, and
 # `unshimmed` sorts after `claude` and declares no override of its own, so a

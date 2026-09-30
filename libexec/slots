@@ -159,7 +159,7 @@ seed_slot() {
 }
 
 # A file that USED to be private and is now SHARED leaves a real copy sitting
-# where the symlink belongs. link_into refuses to clobber that, correctly --
+# where the symlink belongs. link_into refuses to clobber that, correctly,
 # the copy holds records nothing else has. So fold it into the base first, then
 # link, and the migration loses nothing.
 #
@@ -322,7 +322,7 @@ partition_members() {   # <base> <pooldir> -- one path per line
   for _pm in "$2"/slot-*; do is_slot "$_pm" && printf '%s\n' "$_pm"; done
 }
 
-# reconcile <base> <pooldir> [dst] -- merge <file> across the partition into
+# reconcile <base> <pooldir> [dst]: merge <file> across the partition into
 # every member, or into <dst> alone. Quiet and non-fatal: this runs on the
 # launch path, and a launcher that refuses to start an agent because a merge
 # helper had a bad day would be a far worse bug than the one it fixes.
@@ -540,16 +540,16 @@ cmd_warm() {
     [ -s "$slot/$CRED_FILE" ] || { target=$slot; break; }
   done
   if [ -z "$target" ]; then
-    echo "valet-key-slots: $id pool FULL -- all $total warm (use 'force')."
+    echo "valet-key-slots: $id pool FULL: all $total warm (use 'force')."
     return 0
   fi
-  echo "valet-key-slots: $id -- $warm0/$total warm; warming ${target##*/}."
+  echo "valet-key-slots: $id: $warm0/$total warm; warming ${target##*/}."
   _run_on_slot "$target"
   warm1=$(pool_counts "$pd"); warm1=${warm1% *}
   if [ "$warm1" -gt "$warm0" ]; then
-    echo "valet-key-slots: $id -- now $warm1/$total warm (was $warm0)."
+    echo "valet-key-slots: $id: now $warm1/$total warm (was $warm0)."
   else
-    echo "valet-key-slots: $id -- still $warm0/$total; ${target##*/} cold."
+    echo "valet-key-slots: $id: still $warm0/$total; ${target##*/} cold."
   fi
 }
 
@@ -557,7 +557,7 @@ cmd_login_check() {
   id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
   [ -d "$pd" ] || die "no pool for $id ($pd)"
   counts=$(pool_counts "$pd"); warm=${counts% *}; total=${counts#* }
-  echo "valet-key-slots: $id -- $warm/$total warm (cap-warn ${STALE_DAYS}d)"
+  echo "valet-key-slots: $id: $warm/$total warm (cap-warn ${STALE_DAYS}d)"
   _now=$(date +%s)
   for slot in "$pd"/slot-*; do
     is_slot "$slot" || continue
@@ -585,15 +585,15 @@ cmd_force() {
     if [ -z "$oldest" ] || [ "$_m" -lt "$omt" ]; then oldest=$slot; omt=$_m; fi
   done
   if [ -z "$oldest" ]; then
-    echo "valet-key-slots: $id -- no warm slots to refresh."; return 0
+    echo "valet-key-slots: $id: no warm slots to refresh."; return 0
   fi
   _now=$(date +%s); _ago=$(human_ago $((_now - omt)))
-  echo "valet-key-slots: $id -- refreshing ${oldest##*/} (rotated $_ago ago)."
+  echo "valet-key-slots: $id: refreshing ${oldest##*/} (rotated $_ago ago)."
   _run_on_slot "$oldest"
   [ "$(mtime "$oldest/$CRED_FILE")" -gt "$omt" ] \
-    && echo "valet-key-slots: $id -- ${oldest##*/} refreshed." \
+    && echo "valet-key-slots: $id: ${oldest##*/} refreshed." \
     ||
-      echo "valet-key-slots: $id -- ${oldest##*/} unchanged (not re-logged in)."
+      echo "valet-key-slots: $id: ${oldest##*/} unchanged (not re-logged in)."
 }
 
 cmd_login_stale() {
@@ -609,15 +609,15 @@ cmd_login_stale() {
     _run_on_slot "$slot"; _did=$((_did + 1))
   done
   if [ "$_did" -eq 0 ]; then
-    echo "valet-key-slots: $id -- none within ${STALE_DAYS}d of cap."
+    echo "valet-key-slots: $id: none within ${STALE_DAYS}d of cap."
   fi
   return 0
 }
 
-# stale: across ALL pools, list every WARM slot within STALE_DAYS of its cap --
+# stale: across ALL pools, list every WARM slot within STALE_DAYS of its cap,
 # "<id>/<slot> <days>d" a line. READ-ONLY, launches nothing; the attention scan
 # calls it cheaply. Pools nest two levels (<agent>/<profile>).
-# stale [agent] -- with an agent, only that agent's pools.
+# stale [agent]: with an agent, only that agent's pools.
 #
 # The filter is not a convenience, it is a correctness fix. Which file holds a
 # credential, and the pattern that reads a cap out of it, are PER-AGENT facts
@@ -658,19 +658,19 @@ cmd_sync() {
   echo "valet-key-slots: synced $id pool"
 }
 
-# reconcile <id> <base> [--check] -- bring the whole partition into line, or
+# reconcile <id> <base> [--check]: bring the whole partition into line, or
 # report which members are behind without touching anything.
 cmd_reconcile() {
   id=${1:?pool id required}; base=${2:?base dir required}; mode=${3:-}
   pd=$(pool_dir "$id")
   [ -d "$pd" ] || die "no pool for $id ($pd)"
   if [ -z "$MERGE_FILES" ] || [ -z "$MERGE_CMD" ]; then
-    echo "valet-key-slots: $id -- this agent declares no shared files"
+    echo "valet-key-slots: $id: this agent declares no shared files"
     return 0
   fi
   if [ "$mode" = --check ]; then
     if reconcile "$base" "$pd" --check; then
-      echo "valet-key-slots: $id -- all copies current"; return 0
+      echo "valet-key-slots: $id: all copies current"; return 0
     fi
     return 1
   fi
@@ -678,7 +678,7 @@ cmd_reconcile() {
   for slot in "$pd"/slot-*; do
     is_slot "$slot" && stamp_reconciled "$pd" "$slot"
   done
-  echo "valet-key-slots: $id -- reconciled"
+  echo "valet-key-slots: $id: reconciled"
 }
 
 cmd_check() {
@@ -736,7 +736,7 @@ cmd_check() {
          fi ;;
     esac
   fi
-  echo "valet-key-slots: $id -- $total slots, $warm warm," \
+  echo "valet-key-slots: $id: $total slots, $warm warm," \
        "$leased leased$sizenote"
   if [ "$drift" -ne 0 ]; then
     echo "valet-key-slots: $id has $drift dangling link(s)" >&2; return 1

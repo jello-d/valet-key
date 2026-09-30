@@ -7,7 +7,7 @@
 # cluster in front of it is a bad afternoon.
 #
 # This one also demonstrates the answer people forget: EXIT 0 PRINTING
-# NOTHING. That means "I looked, and the answer is definitely the default" --
+# NOTHING. That means "I looked, and the answer is definitely the default",
 # a real answer, so the chain stops and the cwd table is NOT consulted. Use it
 # when you know there is no special context, as opposed to exiting non-zero,
 # which means you could not tell.

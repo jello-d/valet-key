@@ -259,7 +259,7 @@ kill "$hp1" 2>/dev/null || true; wait "$hp1" 2>/dev/null || true
 # --- reclaim is GATED on the pool mutex, deterministically ------------------
 # The stress test below can only ever catch the race probabilistically: the
 # window between removing a dead lock and creating ours is microseconds wide.
-# So the PROPERTY the fix rests on is tested directly instead -- recycling
+# So the PROPERTY the fix rests on is tested directly instead: recycling
 # happens only while holding the pool's reclaim mutex.
 #
 # Every slot dead-held and none free, with the mutex held by a LIVE process:

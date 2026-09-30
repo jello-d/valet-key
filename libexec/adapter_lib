@@ -7,12 +7,12 @@
 # knows about (list_agents), and a shared fragment sitting in that directory
 # would become a phantom agent in `shim`, `check` and `doctor`.
 
-# realbin_from <agent> [preferred path]... -- print the REAL binary for <agent>
+# realbin_from <agent> [preferred path]...: print the REAL binary for <agent>
 # and return 0, or return non-zero if there is none to run.
 #
 # The order is: the $<AGENT>_BIN override, then the adapter's preferred install
 # locations, then PATH in the user's own order. Every candidate is checked
-# against $VALET_KEY_SELF -- the resolved engine -- and skipped if it matches.
+# against $VALET_KEY_SELF (the resolved engine) and skipped if it matches.
 #
 # That skip is the load-bearing part. The shim IS this engine, and it is first
 # on PATH by design; exec'ing it would re-enter the engine, which would resolve

@@ -32,6 +32,6 @@ if ip route show 2>/dev/null | grep -q '^10\.0\.0\.0/8'; then
   exit 0
 fi
 
-echo "vpn: refusing '$1' -- the corporate VPN is down." >&2
+echo "vpn: refusing '$1': the corporate VPN is down." >&2
 echo "  an agent that cannot reach the internal registry will improvise." >&2
 exit 1

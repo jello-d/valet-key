@@ -71,7 +71,7 @@ EOF
 [ "$(dir codex personal)" = "$H" ] ||
   fail "a bare ~ did not expand to \$HOME: $(dir codex personal)"
 
-# The keying, both halves. A line for ANOTHER AGENT must not leak across --
+# The keying, both halves. A line for ANOTHER AGENT must not leak across,
 # claude and gemini both have a `work` profile above, and they are different
 # accounts in different places.
 [ "$(dir codex work)" = "$H/.codex-work" ] ||

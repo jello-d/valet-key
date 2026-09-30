@@ -15,7 +15,7 @@
 # stays 0
 # and each profile maps straight to its config dir. The work profile's dir is
 # KERNEL-SEALED by whatever provisions the boundary (root:<group> 2770 + a
-# default ACL), so corp cloud creds are reachable only from inside that group --
+# default ACL), so corp cloud creds are reachable only from inside that group,
 # stronger than an env-only split. valet-key does not arrange that and does not
 # need to know who does: it only selects the dir.
 

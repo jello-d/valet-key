@@ -145,7 +145,7 @@ for m in "$P/slot-1" "$P/slot-2" "$P/slot-3" "$P/slot-4" "$H/.claude"; do
     fail "${m##*/}: a revocation was ignored once provenance was tracked"
 done
 
-# --- a simultaneous cohort converges the whole pool, not just its own slot --
+# --- a simultaneous cohort converges the whole pool, not just its own slot ----
 # `mux resume` brings every session up at once. None can learn from the others
 # during its own startup, so each launch converges the ENTIRE partition, that
 # is what makes the pool consistent from the first one onward.
@@ -297,7 +297,7 @@ case $out in
   *"no pool"*) fail "poolless was reported as a missing pool: $out" ;;
 esac
 
-# A POOLED agent that simply declares no merge files is also a clean no-op --
+# A POOLED agent that simply declares no merge files is also a clean no-op,
 # that is how an agent opts out, and it must not look like a failure.
 mkdir -p "$H/.codex"
 E sh "$VK" provision codex personal 2 >/dev/null ||

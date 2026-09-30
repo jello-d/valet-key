@@ -21,7 +21,7 @@ mkdir -p "$T/cfg/hooks/profile.d" "$T/cfg/hooks/guard.d"
 PD=$T/cfg/hooks/profile.d
 GD=$T/cfg/hooks/guard.d
 
-# doctor's hooks section only. Everything is pointed into the scratch dir --
+# doctor's hooks section only. Everything is pointed into the scratch dir,
 # doctor is read-only, but a test whose output depends on the box's real pool
 # and real ~/.claude is a test that reports on the wrong machine.
 doc() {

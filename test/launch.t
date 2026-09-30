@@ -272,7 +272,7 @@ case $err in
   *) fail "VALET_KEY_VERBOSE did not restore the announcement: $err" ;;
 esac
 
-# A poolless adapter is pointed straight at the profile's dir, never a slot --
+# A poolless adapter is pointed straight at the profile's dir, never a slot,
 # it has no rotating token to isolate, and a pool would only add a layer.
 out=$(E GCLOUD_BIN="$T/bin/gcloud" sh "$VK" run gcloud 2>/dev/null)
 [ "$out" = "gcloud cfg=$H/.config/gcloud" ] ||

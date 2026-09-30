@@ -69,7 +69,7 @@ RECONCILED = "projects"
 SUPPORTED = (".claude.json",)
 
 # Files that can be ADOPTED: folded out of a private per-slot copy into the
-# shared one, without losing anything. Only an APPEND-ONLY log qualifies --
+# shared one, without losing anything. Only an APPEND-ONLY log qualifies,
 # its records accumulate and are never rewritten, so a union of two copies is
 # exactly their combined history. A read-modify-write document like
 # .claude.json emphatically does not: unioning two versions of it would mean
