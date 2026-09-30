@@ -61,7 +61,24 @@ exempt_match() {   # <relpath>
 }
 
 FILES=$(mktemp)
-trap 'rm -f "$FILES" "$FILES.sh" "$FILES.bash" "$FILES.py"' EXIT
+# A LITERAL TAB IN A VARIABLE, because the two list-based detectors emit
+# tab-separated records and `IFS='<tab>'` written inline is invisible: an
+# editor that trims trailing whitespace, or a copy through a terminal, turns
+# it into an empty IFS and every record then splits on whitespace, putting a
+# path with a space in it into two fields.
+TABCH=$(printf '\t')
+# THE LITERAL LIST, built once and reused by the trap below and by the wider
+# one at the self-test section. Same rule as that one: expand now, not at fire
+# time. `mktemp` with no template cannot answer a path with a quote in it, and
+# the refusal is cheaper than reasoning about it again later.
+case $FILES in
+('' | *\'*) echo "conventions: refusing an unusable temp file: [$FILES]" >&2
+  exit 1 ;;
+esac
+CLEANF="'$FILES' '$FILES.sh' '$FILES.bash' '$FILES.py' '$FILES.cols'"
+CLEANF="$CLEANF '$FILES.dash'"
+# shellcheck disable=SC2064  # EXPANDING NOW IS THE POINT: see $SELF's trap.
+trap "rm -f $CLEANF" EXIT
 git ls-files | while IFS= read -r f; do
   [ -f "$f" ] || continue
   # A tracked symlink out of the tree is another package's file, not ours.
@@ -116,11 +133,62 @@ touch "$FILES.sh" "$FILES.bash" "$FILES.py"
 #
 # Each echoes its finding and echoes NOTHING when the file is clean, so "did the
 # detector fire" is a test of emptiness in both directions.
-d_cols() {   # <file> -> line numbers over 80 columns
-  awk 'length > 80 { printf "%d ", FNR }' "$1"
+# python3, NOT `awk 'length > 80'`, AND THE REASON IS A MEASUREMENT. gawk in a
+# UTF-8 locale counts CHARACTERS; BSD awk counts BYTES, and macOS ships the
+# latter. So the identical tree was clean on Linux and had seven violations on
+# a Mac, none of them real:
+#
+#     README.md:90                     76 chars     154 bytes
+#     bin/mux:1391                     79 chars      81 bytes
+#     libexec/mux-agent-state-render   78 chars      84 bytes
+#
+# The comment above this used to say "awk counts CHARACTERS, which is what the
+# limit means", which was true of the author's awk and false of half the fleet:
+# a portability claim with no check behind it.
+#
+# CHARACTERS IS THE RIGHT READING and bytes is not close. That README line is a
+# table of glyphs, so passing a byte limit would mean deleting content to
+# satisfy a measurement nobody makes. (Display WIDTH is righter still, since a
+# glyph like U+26AB occupies two cells, and it is not worth a wcwidth table
+# here: characters is what the fleet has always enforced.)
+#
+# THE PORTABLE awk WAS TRIED AND REJECTED: counting bytes that are not UTF-8
+# continuation bytes works on a byte-based awk and needs a `[\200-\277]`
+# class, which gawk in UTF-8 reads as the CODEPOINTS U+0080..U+00BF instead,
+# so a line containing `\u00b7` MIDDLE DOT undercounts. There is one in this
+# very tree (libexec/mux-agent-state-render), so that is a live bug and not a
+# hypothetical one.
+#
+# IT TAKES THE FILE LIST, one process for the whole tree, which is the pattern
+# rules 3 and 7's double-dash half already use. Per-file it would be 187 python
+# startups and about 3s added to every suite run and every pre-commit hook.
+d_cols() {   # <file-list> -> "<path>TAB<line numbers>" per offending file
+  python3 - "$1" <<'PYCOLS'
+import sys
+out = []
+for path in open(sys.argv[1]).read().split():
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            over = [str(n) for n, line in enumerate(fh, 1)
+                    if len(line.rstrip("\n")) > 80]
+    except OSError:
+        continue
+    if over:
+        out.append("%s\t%s" % (path, " ".join(over)))
+print("\n".join(out))
+PYCOLS
 }
+# awk, NOT `grep -P`, AND THAT IS A PORTABILITY FIX WITH A HISTORY: BSD grep
+# has no -P at all, so on macOS this printed a usage block to the /dev/null
+# below, returned nothing, and the count read as 0 tabs. That is the exact
+# degradation the self-test section predicts in its own comment, and it took a
+# macOS CI runner to meet it. The tab is built with sprintf rather than written
+# as a backslash-t, because an escape inside a regex is the implementation's
+# business and a literal tab in a source line is an editor's.
 d_tabs() {   # <file> -> count of TAB-indented lines (0 when clean)
-  grep -cP '^[ ]*\t' "$1" 2>/dev/null || true
+  awk 'BEGIN { t = sprintf("%c", 9) }
+       $0 ~ "^ *" t { n++ }
+       END { print n + 0 }' "$1" 2>/dev/null || true
 }
 # The banned set is every dash a writer reaches for INSTEAD of punctuation, not
 # only the two that turned up first: figure dash, en, em, horizontal bar, the
@@ -129,10 +197,42 @@ d_tabs() {   # <file> -> count of TAB-indented lines (0 when clean)
 # invisible and so the worst of them. Measured across all 15 repos: no text file
 # holds any of these beyond U+2014/U+2013, so widening costs nothing today and
 # closes the hole before someone pastes one in.
-DASHES='\x{00AD}|\x{2010}|\x{2011}|\x{2012}|\x{2013}|\x{2014}'
-DASHES="$DASHES|\x{2015}|\x{2212}|\x{2E3A}|\x{2E3B}|\x{FF0D}"
-d_dash() {   # <file> -> non-empty when a banned dash character is present
-  grep -oP "$DASHES" "$1" 2>/dev/null | head -1
+# python3, NOT `grep -P`, for the same reason d_tabs moved to awk: no BSD grep
+# has PCRE, so rule 7 reported EVERY file clean on macOS. python3 is not a new
+# dependency (rule 3 and the prose scan below already need it) and it is the
+# only tool here that can name a codepoint without the pattern depending on
+# the locale. An undecodable byte is REPLACED rather than raising: a file this
+# cannot decode is not a file with an em-dash in it, and the self-test is what
+# catches this going silent in either direction.
+d_dash() {   # <file-list> -> "<path>TAB<char>" per offending file
+  python3 - "$1" <<'PYDASH'
+import sys
+BANNED = (
+    "\u00ad"                                    # SOFT HYPHEN: invisible,
+                                                # so the worst of them
+    "\u2010\u2011\u2012\u2013\u2014\u2015"  # hyphen .. horizontal bar
+    "\u2212"                                    # MINUS SIGN: identical to an
+                                                # em-dash in a comment
+    "\u2e3a\u2e3b"                             # two- and three-em dashes
+    "\uff0d"                                    # FULLWIDTH HYPHEN-MINUS
+)
+out = []
+for path in open(sys.argv[1]).read().split():
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        continue
+    for ch in text:
+        if ch in BANNED:
+            # THE CODEPOINT, NOT THE CHARACTER. Three of the eleven are
+            # invisible or near-invisible (U+00AD SOFT HYPHEN above all), so
+            # echoing the byte back produces a message with a hole in it:
+            # "contains the dash character  used as punctuation". Naming it
+            # also keeps this checker's own output free of the thing it bans.
+            out.append("%s\tU+%04X" % (path, ord(ch)))
+            break
+print("\n".join(out))
+PYDASH
 }
 # ROFF SPELLS AN EM-DASH IN ASCII, so d_dash above can never see it: a
 # backslash then (em. It renders as a real em-dash in the man page a user
@@ -323,13 +423,20 @@ PY
 # --- the detectors are PROVEN TO FIRE, every run -----------------------------
 # Every rule above can only report what its detector detects, and four of them
 # lean on an external tool that may be missing or built without a feature:
-# grep -P needs PCRE, rule 3 needs python3, rule 8 needs dash and bash. EVERY
+# rules 2, 3 and 7 need python3 or awk, and rule 8 needs dash and bash. EVERY
 # ONE OF THOSE DEGRADED TO SILENCE. Measured, before this section existed:
 #
 #   python3 hidden      a planted 2-space Python indent -> rc=0, "10 python"
 #   grep without -P     a tabbed line -> count empty -> read as 0 tabs
 #   grep without -P     a real em-dash -> rule 7 never fires
 #   dash absent         a file that does not parse -> reported clean
+#
+# AND THE MIDDLE TWO WERE NOT HYPOTHETICAL. They shipped, and a macOS CI runner
+# met them on 2026-09-30: BSD grep has no -P, so rules 2 and 7 were enforcing
+# NOTHING on every Mac while this file reported its usual pass everywhere else.
+# THIS SECTION IS THE ONLY REASON ANYONE FOUND OUT, which is the argument for
+# proving a detector rather than trusting it. Both moved off PCRE (awk and
+# python3); the rows above are kept as the record of what was measured.
 #
 # A missing tool is therefore NOT tiptoed around, and not announced and skipped
 # either: each detector is run here against a sample that MUST trip it and a
@@ -345,10 +452,36 @@ PY
 # BOTH DIRECTIONS, because a detector wedged ON is as useless as one wedged off:
 # it would bury every real finding in noise until someone stopped reading.
 SELF=$(mktemp -d)
+# --- `rm -rf` NEVER RUNS WITH A DEFERRED EXPANSION --------------------------
+# THE STANDING RULE in ~/src/CLAUDE.md, Equal-weight rules: the value is
+# expanded FIRST, while it can still be checked, and the LITERAL is written
+# down so the exact command can be read before it runs.
+#
+# A trap is the sharpest case of it, because `trap 'rm -rf "$SELF"' EXIT`
+# defers the expansion to FIRE TIME: the shell is already exiting, often on an
+# error path, and whatever the variable holds by then is what goes. THAT IS
+# NOT A HYPOTHETICAL HERE. mux's test harness had the identical shape and
+# DELETED ITS OWN REPOSITORY on 2026-09-30, because a canonicalisation
+# (`cd -- "$(mktemp -d)" && pwd -P`) turns an EMPTY mktemp answer into the
+# CURRENT DIRECTORY, and `mktemp` answering empty needs nothing more exotic
+# than a stale TMPDIR. This file is vendored into fourteen repos, so it was
+# fourteen copies of that shape.
+#
+# So: verify, then bake the literal in. `trap` then PRINTS exactly what will
+# run, and no later assignment to SELF or FILES can move the target.
+case $SELF in
+('' | *\'*) echo "conventions: refusing an unusable scratch dir: [$SELF]" >&2
+  exit 1 ;;
+esac
+[ -d "$SELF" ] && [ "$SELF" != "$PWD" ] && [ "$SELF" != / ] || {
+  echo "conventions: refusing [$SELF] as the scratch dir: not a directory," >&2
+  echo "conventions: or it is the current directory, or /." >&2
+  exit 1; }
 # ONE trap covering both, replacing the corpus trap above rather than sitting
 # beside it: POSIX sh has no trap stack, so a second `trap ... EXIT` would
 # silently discard the first and leak $FILES on every run.
-trap 'rm -f "$FILES" "$FILES.sh" "$FILES.bash" "$FILES.py"; rm -rf "$SELF"' EXIT
+# shellcheck disable=SC2064  # EXPANDING NOW IS THE POINT: see above.
+trap "rm -f $CLEANF; rm -rf '$SELF'" EXIT
 NPROVEN=0
 prove() {   # <name> <expect-hit: y|n> <finding>
   case $2 in
@@ -365,8 +498,21 @@ prove() {   # <name> <expect-hit: y|n> <finding>
 # BLOCKS is worse than one that fails, so nothing here reads stdin.
 printf '%090d\n' 0 > "$SELF/long"
 printf 'short line\n' > "$SELF/short"
-prove 1-columns y "$(d_cols "$SELF/long")"
-prove 1-columns n "$(d_cols "$SELF/short")"
+printf '%s\n' "$SELF/long"  > "$SELF/collist.bad"
+printf '%s\n' "$SELF/short" > "$SELF/collist.good"
+prove 1-columns y "$(d_cols "$SELF/collist.bad")"
+prove 1-columns n "$(d_cols "$SELF/collist.good")"
+# A MULTI-BYTE LINE THAT IS UNDER THE LIMIT, which is the case that was
+# broken: 40 copies of a 3-byte character is 40 characters and 120 bytes, so
+# a byte-counting detector calls it a violation and a correct one does not.
+# Proven as a CLEAN sample, because the failure here was a FALSE positive.
+awk 'BEGIN {
+       s = ""
+       while (length(s) < 40) s = s sprintf("%c%c%c", 226, 152, 133)
+       print s
+     }' > "$SELF/wide"
+printf '%s\n' "$SELF/wide" > "$SELF/collist.wide"
+prove 1-columns n "$(d_cols "$SELF/collist.wide")"
 
 printf '\tindented with a tab\n' > "$SELF/tabbed"
 printf '  indented with spaces\n' > "$SELF/spaced"
@@ -386,8 +532,10 @@ prove 3-python n "$(d_pyindent "$SELF/pylist.good")"
 # itself, which would make it fail its own rule 7.
 printf 'an \342\200\224 em dash\n' > "$SELF/dashy"
 printf 'an ordinary - hyphen\n'      > "$SELF/clean"
-prove 7-dashes y "$(d_dash "$SELF/dashy")"
-prove 7-dashes n "$(d_dash "$SELF/clean")"
+printf '%s\n' "$SELF/dashy" > "$SELF/dashlist.bad"
+printf '%s\n' "$SELF/clean" > "$SELF/dashlist.good"
+prove 7-dashes y "$(d_dash "$SELF/dashlist.bad")"
+prove 7-dashes n "$(d_dash "$SELF/dashlist.good")"
 
 # Built with printf from the byte sequence so this file holds no banned dash
 # itself, which would make it fail its own rule 7.
@@ -445,17 +593,23 @@ if [ -n "$bad" ]; then
   echo >&2
   echo 'A detector above is not working, so NOTHING ELSE RAN: every rule' >&2
   echo 'below would report clean whether the tree is clean or not. Fix the' >&2
-  echo 'tool (grep needs -P/PCRE, rule 3 needs python3, rule 8 needs dash' >&2
-  echo 'and bash) rather than reading the result.' >&2
+  echo 'tool (rules 2/3/7 need python3 or awk, rule 8 needs dash and' >&2
+  echo 'bash) rather than reading the result.' >&2
   exit 1
 fi
 
 # --- 1. 80 COLUMNS, the hard rule --------------------------------------------
-# awk counts CHARACTERS, which is what the limit means.
-while IFS= read -r f; do
-  w=$(d_cols "$f")
-  [ -z "$w" ] || note "$f: over 80 columns at line(s): $w"
-done < "$FILES"
+# CHARACTERS, not bytes: see d_cols, where the difference cost a Mac seven
+# false findings. REDIRECTED TO A FILE RATHER THAN PIPED, because `note`
+# appends to a shell VARIABLE and a pipeline runs its right-hand side in a
+# SUBSHELL, so every finding would be discarded and the rule would report
+# clean for a reason nothing on screen could explain.
+d_cols "$FILES" > "$FILES.cols" \
+  || note "python3 failed to run the column check"
+while IFS="$TABCH" read -r f w; do
+  [ -n "$f" ] || continue
+  note "$f: over 80 columns at line(s): $w"
+done < "$FILES.cols"
 
 # --- 2. NEVER TABS, where the language does not demand them ------------------
 # Go and Make are the only two that get tabs, and only because gofmt emits them
@@ -535,9 +689,16 @@ done < "$FILES"
 # ALL THREE SPELLINGS, because the rule is about what a reader sees and they are
 # indistinguishable on the page: the dash CHARACTER, the roff ASCII escape that
 # renders as one, and the double hyphen standing in for one.
+d_dash "$FILES" > "$FILES.dash" \
+  || note "python3 failed to run the dash-character check"
+while IFS="$TABCH" read -r f d; do
+  [ -n "$f" ] || continue
+  note "$f: contains $d, a dash character used as punctuation"
+done < "$FILES.dash"
+# THE ROFF HALF STAYS PER FILE: `grep -oE` is POSIX, so it works on either
+# userland, and it names WHICH escape it found, which is the useful half of
+# that message.
 while IFS= read -r f; do
-  d=$(d_dash "$f")
-  [ -z "$d" ] || note "$f: contains a dash character used as punctuation"
   r=$(d_roff "$f")
   [ -z "$r" ] || note "$f: spells an em-dash as roff $r (renders as one)"
 done < "$FILES"
