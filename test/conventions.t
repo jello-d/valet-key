@@ -134,6 +134,111 @@ DASHES="$DASHES|\x{2015}|\x{2212}|\x{2E3A}|\x{2E3B}|\x{FF0D}"
 d_dash() {   # <file> -> non-empty when a banned dash character is present
   grep -oP "$DASHES" "$1" 2>/dev/null | head -1
 }
+# ROFF SPELLS AN EM-DASH IN ASCII, so d_dash above can never see it: a
+# backslash then (em. It renders as a real em-dash in the man page a user
+# reads. 91 were live across eight repos when this was added; the groff long
+# form, a backslash then [em], is the same thing.
+d_roff() {   # <file> -> non-empty when a roff dash escape is present
+  grep -oE '\\[([]e[mn][])]?' "$1" 2>/dev/null | head -1
+}
+# THE `--` HALF, the half the house rule spends its words on and the half
+# nothing enforced. It needs prose-versus-code discrimination that POSIX ERE
+# cannot express (no lookaround), and Python docstrings need a real lexer, so it
+# is embedded Python beside rule 3 rather than an awk approximation.
+#
+# WHAT IS PROSE: markdown outside fenced and indented blocks; COMMENT and STRING
+# tokens in Python, via tokenize, because a docstring is prose and scanning only
+# `#` lines missed 139 in one repo; comment lines elsewhere.
+# WHAT IS NOT: a `--` inside backticks, an end-of-options marker (`cd --`,
+# `set --`, `printf --`, `grep -qxF --`), a run of three or more (a divider),
+# and a symmetric `-- banner --`.
+#
+# A LINE MAY OPT OUT with `conventions: allow --` and a reason, suppressing
+# from the marker to the next blank or comment-only line. That is what a quoted
+# transcript or a published CLI signature needs, and it is per-site so a second
+# ACCIDENTAL one still fails. The inline-disable convention mux/lint.t states.
+d_dashdash() {   # <file-list> -> one line per prose double-dash
+  python3 - "$1" <<'PY'
+import io, re, sys, tokenize
+
+ALLOW = re.compile(r'conventions:\s*allow\s*--')
+DASH  = re.compile(r'(?:(?<=\s)|^)(?<!-)--(?!-)(?=\s|$)')
+ARGM  = re.compile(r'(^|[;&|(`\s])(cd|set|eval|exec|printf|command|readlink|'
+                   r'pgrep|pkill|xargs|install|chown|chmod|rm|cp|mv|grep|sed|'
+                   r'awk|find|git|echo|tar|dd|env|test|parted|sgdisk|mkfs|'
+                   r'mount|umount|dpkg|apt-get|systemctl|kubectl|ssh|sudo|'
+                   r'\[)\b[^`]{0,40}--(\s|$)')
+
+def visible(line):
+    parts = line.split('`')
+    return ''.join(p for k, p in enumerate(parts) if k % 2 == 0)
+
+def banner(line):
+    t = line.strip().lstrip('#').strip()
+    return t.startswith('--') and t.endswith('--')
+
+def prose_lines(path):
+    """{lineno: text} for the lines that are PROSE in this file's language."""
+    try:
+        txt = open(path, encoding='utf-8', errors='replace').read()
+    except Exception:
+        return {}
+    if path.endswith('.py'):
+        got = {}
+        try:
+            for tok in tokenize.generate_tokens(io.StringIO(txt).readline):
+                if tok.type not in (tokenize.COMMENT, tokenize.STRING):
+                    continue
+                for off, l in enumerate(tok.string.splitlines()):
+                    got[tok.start[0] + off] = l
+        except Exception:
+            return {}
+        return got
+    lines = txt.splitlines()
+    if path.endswith('.md'):
+        got, fence = {}, False
+        for n, l in enumerate(lines, 1):
+            if l.strip().startswith('```'):
+                fence = not fence
+                continue
+            if fence or re.match(r'^\s{4,}\S', l):
+                continue
+            got[n] = l
+        return got
+    return {n: m.group(1) for n, m in
+            ((n, re.match(r'^\s*#(.*)$', l)) for n, l in enumerate(lines, 1))
+            if m}
+
+out = []
+for p in open(sys.argv[1]).read().split():
+    try:
+        raw = open(p, encoding='utf-8', errors='replace').read().splitlines()
+    except Exception:
+        continue
+    allowed, until = set(), 0
+    for n, l in enumerate(raw, 1):
+        if ALLOW.search(l):
+            until = n
+        if until and n >= until:
+            # A comment-only marker line ('#', '//') is a PARAGRAPH boundary in
+            # these files, so it ends the suppression too. Without that, a
+            # marker placed in a long comment block would silently cover the
+            # rest of it, and the escape hatch would quietly widen.
+            if l.strip() in ('', '#', '//', '.\\"'):
+                until = 0
+            else:
+                allowed.add(n)
+    for n, text in sorted(prose_lines(p).items()):
+        if n in allowed or banner(text):
+            continue
+        v = visible(text)
+        if ARGM.search(v) or not DASH.search(v):
+            continue
+        out.append("%s:%d: %s" % (p, n, text.strip()[:60]))
+print("\n".join(out))
+PY
+}
+
 d_shparse() {   # <file> -> non-empty when it does NOT parse as POSIX sh
   dash -n "$1" >/dev/null 2>&1 || echo failed
 }
@@ -231,6 +336,28 @@ printf 'an \342\200\224 em dash\n' > "$SELF/dashy"
 printf 'an ordinary - hyphen\n'      > "$SELF/clean"
 prove 7-dashes y "$(d_dash "$SELF/dashy")"
 prove 7-dashes n "$(d_dash "$SELF/clean")"
+
+# Built with printf from the byte sequence so this file holds no banned dash
+# itself, which would make it fail its own rule 7.
+printf 'roff \134(em here\n' > "$SELF/roffy"
+printf 'spelled with a plain - hyphen\n' > "$SELF/roffclean"
+prove 7-roff y "$(d_roff "$SELF/roffy")"
+prove 7-roff n "$(d_roff "$SELF/roffclean")"
+
+# The double-dash detector, over a LIST like the real rule takes. Four samples:
+# prose must fire; an argument marker, a divider and an opted-out line must
+# not. The opt-out is proven here because an escape hatch nobody tests is one
+# that silently stops working, and then every marked line is unchecked.
+printf '# a clause -- and its continuation\n'      > "$SELF/dd.sh"
+printf '# cd -- /some/path is an argument marker\n' > "$SELF/dd-arg.sh"
+printf '# --- a divider ---------------------\n'   > "$SELF/dd-div.sh"
+printf '# conventions: allow -- quoted output\n# it said -- verbatim\n' \
+  > "$SELF/dd-ok.sh"
+printf '%s\n' "$SELF/dd.sh"     > "$SELF/ddlist.bad"
+printf '%s\n' "$SELF/dd-arg.sh" "$SELF/dd-div.sh" "$SELF/dd-ok.sh" \
+  > "$SELF/ddlist.good"
+prove 7-dashdash y "$(d_dashdash "$SELF/ddlist.bad")"
+prove 7-dashdash n "$(d_dashdash "$SELF/ddlist.good")"
 
 printf '#!/bin/sh\nif then fi\n' > "$SELF/bad.sh"
 printf '#!/bin/sh\nexit 0\n'     > "$SELF/good.sh"
@@ -347,14 +474,19 @@ while IFS= read -r f; do
 done < "$FILES"
 
 # --- 7. NO EM-DASHES, in prose, comments and docs alike ----------------------
-# The character half of the rule. The `--` half (a double hyphen standing in for
-# an em-dash) is not here YET: it needs prose-versus-code discrimination that
-# POSIX ERE cannot express, so it lands as embedded Python beside rule 3 once
-# every repo is at zero. See _common.md, the no-em-dash bullet.
+# ALL THREE SPELLINGS, because the rule is about what a reader sees and they are
+# indistinguishable on the page: the dash CHARACTER, the roff ASCII escape that
+# renders as one, and the double hyphen standing in for one.
 while IFS= read -r f; do
   d=$(d_dash "$f")
   [ -z "$d" ] || note "$f: contains a dash character used as punctuation"
+  r=$(d_roff "$f")
+  [ -z "$r" ] || note "$f: spells an em-dash as roff $r (renders as one)"
 done < "$FILES"
+out=$(d_dashdash "$FILES") || out='python3 failed to run the double-dash check'
+[ -z "$out" ] || note "prose double-dashes (reword, or mark the line
+  \`conventions: allow --\` with a reason):
+$(printf '%s' "$out" | sed 's/^/    /')"
 
 # --- 8. EVERY SHELL FILE PARSES, UNDER ITS OWN INTERPRETER -------------------
 # The cheapest empirical check the language offers, and it catches the class
