@@ -131,7 +131,20 @@ done < "$FILES"
 # and require each new level to be exactly 4 deeper than the one enclosing it.
 # Continuation lines are NOT covered: they produce no INDENT token and may
 # align to their opening bracket, which is the formatter's call and not ours.
-if [ -s "$FILES.py" ] && command -v python3 >/dev/null 2>&1; then
+# THE SKIP ANNOUNCES ITSELF, and the pass line below stops counting Python
+# when it fires. Guarded on python3 and silent, this rule did NOTHING on a box
+# without it while the summary still said "N python", asserting coverage that
+# never happened: a planted 2-space indent gave rc=1 with python3, and rc=0
+# plus "ok conventions (30 files, 10 shell, 10 python)" without it. That is the
+# `|| continue` shape from tackup's Gotchas, in the shared checker itself. A
+# skipped rule must be VISIBLE, so it says so and the summary stops claiming it.
+PY_OK=yes
+if [ -s "$FILES.py" ] && ! command -v python3 >/dev/null 2>&1; then
+  PY_OK=no
+  printf 'skip conventions/python-indent (no python3, %s file(s) unchecked)\n' \
+    "$(wc -l < "$FILES.py")" >&2
+fi
+if [ -s "$FILES.py" ] && [ "$PY_OK" = yes ]; then
   out=$(python3 - "$FILES.py" <<'PY'
 import io, sys, tokenize
 bad = []
@@ -249,5 +262,10 @@ if [ "$tracked" -gt 20 ] && [ "$N" -lt 5 ]; then
 fi
 
 finish
+# The Python count is claimed ONLY when the Python rule actually ran; see the
+# announce-the-skip note at rule 3. Reporting a corpus a rule never read is how
+# a green summary outlives the coverage it describes.
+if [ "$PY_OK" = yes ]; then _py=" $(wc -l < "$FILES.py") python"
+else _py=" python SKIPPED"; fi
 pass "$N files, $(( $(wc -l < "$FILES.sh") + $(wc -l < "$FILES.bash") ))\
- shell, $(wc -l < "$FILES.py") python"
+ shell,$_py"
