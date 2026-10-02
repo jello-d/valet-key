@@ -24,9 +24,22 @@
 # payloads belong there; nothing else should.
 set -eu
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=
-[ -n "$ROOT" ] || { echo "FAIL conventions: not a git repo" >&2; exit 1; }
-HERE=$(cd "$(dirname "$0")" && pwd)
+# THE REPO IS THE ONE THIS FILE IS VENDORED INTO, asked from THIS FILE'S OWN
+# LOCATION and never from the caller's cwd. `git rev-parse` with no -C answers
+# about the current directory, which is the caller's, and that is wrong in two
+# directions:
+#   outside any repo    -> "not a git repo", so the check cannot run at all
+#   inside ANOTHER repo -> it silently audits THAT repo and reports clean
+# The second is the dangerous one, because nothing in the output says which
+# tree was read. MEASURED 2026-10-02 running a deployed clone's suite from two
+# boxes: from $HOME it failed outright, and from a dev checkout of the same
+# project it audited the CHECKOUT and passed, with the clone never read. Same
+# commit, same files, opposite verdicts, and the passing one was the lie.
+# A vendored checker must be anchored to what it is vendored beside.
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null) || ROOT=
+[ -n "$ROOT" ] || { echo "FAIL conventions: $HERE is not in a git repo" >&2
+  exit 1; }
 EXEMPT=$HERE/conventions.exempt
 cd "$ROOT"
 
