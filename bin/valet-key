@@ -65,8 +65,18 @@ DEFAULT_PROFILE=${VALET_KEY_DEFAULT_PROFILE:-personal}
 # Where the shims live: a dir the user puts FIRST on PATH so a shim shadows
 # the real binary (no collision; distinct from ~/.local/bin). An integrator can
 # point this at a dir it already owns first (tackup: ~/bin).
-_shimdef=${XDG_DATA_HOME:-$HOME/.local/share}/valet-key/shims
+#
+# THE STATE ROOT, not the data root, and that is a correctness fix rather than
+# tidiness. Shims are GENERATED state, and the data root is now the install
+# payload ($XDG_DATA_HOME/valet-key), which `setup.sh install` replaces
+# wholesale and `uninstall` removes: a shims dir inside it was destroyed by
+# every install. Generated state also has no business in a tree where
+# everything else is a copy of what was shipped.
+_shimdef=${XDG_STATE_HOME:-$HOME/.local/state}/valet-key/shims
 VALET_KEY_SHIMS_DIR=${VALET_KEY_SHIMS_DIR:-$_shimdef}
+# The pre-move default, still reported by `doctor` so a box carrying shims at
+# the old path says so instead of silently routing nothing.
+_shimold=${XDG_DATA_HOME:-$HOME/.local/share}/valet-key/shims
 
 die() { echo "valet-key: $*" >&2; exit 1; }
 
@@ -677,6 +687,15 @@ m_doctor() {
   echo "valet-key doctor"
 
   echo; echo "shims (does typing the agent route through valet-key?)"
+  # Shims left at the PRE-MOVE default. They used to live inside what is now
+  # the install payload, which `setup.sh install` replaces wholesale, so a box
+  # that still has them there is one install away from losing them, and any
+  # that survive are not the ones on PATH. A warning rather than a failure:
+  # nothing is broken yet, and `setup.sh install` moves them.
+  if [ "$_shimold" != "$VALET_KEY_SHIMS_DIR" ] && [ -d "$_shimold" ]; then
+    _dwarn "shims found at the old path: $_shimold"
+    _dfix "they belong in $VALET_KEY_SHIMS_DIR; setup.sh install moves them"
+  fi
   for _ag in $(list_agents); do
     _w=$(command -v "$_ag" 2>/dev/null || true)
     if [ -z "$_w" ]; then

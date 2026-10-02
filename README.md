@@ -80,7 +80,7 @@ per agent:
 
 ```sh
 git clone https://github.com/jello-d/valet-key ~/.valet-key
-~/.valet-key/setup.sh install   # links valet-key into ~/.local (bin/libexec/..)
+~/.valet-key/setup.sh install   # places the payload, links bin + man
 
 eval "$(valet-key init)"        # prints: export PATH="<shims-dir>:$PATH"
 valet-key shim claude           # make `claude` route through valet-key
@@ -92,10 +92,26 @@ directory is separate from `~/.local/bin`, so the shim shadows the real binary
 with no collision; valet-key finds the real one past itself.
 
 `setup.sh` is the single entry point for the package itself: `install`,
-`uninstall`, `check` (audit the links, non-zero on drift), `test` (run the
-in-repo suite), and `version`. It links rather than copies, so a `git pull` in
-the clone is the upgrade. `PREFIX` (default `~/.local`) and the `XDG_*`
-variables choose where the links land.
+`uninstall`, `check` (audit the install, non-zero on drift), `paths` (every
+root it uses), `test` (run the in-repo suite), and `version`. `PREFIX` (default
+`~/.local`) and the `XDG_*` variables choose where everything lands.
+
+It **places a payload** rather than linking into the checkout: `install` copies
+the shipped tree to `~/.local/share/valet-key`, then links
+`~/.local/bin/valet-key` into it. That is what makes the command survive a
+provisioning layer that re-clones or wipes its source, and it is why `bin`,
+`libexec`, `share` and `man`
+all live in the one payload: the command resolves its own real path and reads
+`../libexec` from it, so a split tree would resolve into nothing. Re-run
+`install` to upgrade; it re-copies and is safe to repeat.
+
+`~/.config/valet-key` doubles as the index: alongside your `profiles`, `dirs`
+and `hooks/` it carries a `share` symlink into the payload and a generated
+`README` naming every root. Machine-local roots (the shims dir, the credential
+pool) are deliberately *not* linked from there, since a config directory is
+meant to be shareable between machines and a link to local state would either
+dangle on the other box or carry this one onto it. `valet-key paths` and that
+README are how you find them.
 
 Man pages install to `share/man/man1/`; put that on your `MANPATH` for
 `man valet-key`.
@@ -237,8 +253,9 @@ resolution you can't see is one you can't check.
 - **`VALET_KEY_HOOKS`** is the hooks root (`profile.d/`, `guard.d/`). Default
   `$VALET_KEY_CONFIG/hooks`.
 - **`VALET_KEY_SHIMS_DIR`** is where shims live; put it first on `PATH`.
-  Default `$XDG_DATA_HOME/valet-key/shims`, else
-  `~/.local/share/valet-key/shims`.
+  Default `$XDG_STATE_HOME/valet-key/shims`, else
+  `~/.local/state/valet-key/shims`. Shims are generated state, so they sit in
+  the state root rather than the data root, which is the install payload.
 - **`VALET_KEY_DEFAULT_PROFILE`** is the unmatched fallback. Default
   `personal`.
 - **`VALET_KEY_POOL_ROOT`** is the slot-pool root. Default `~/.valet-key-pool`.

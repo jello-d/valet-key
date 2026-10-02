@@ -507,9 +507,17 @@ else
 .TP
 .B VALET_KEY_SHIMS_DIR
 Where shims live. Default
-.IR $XDG_DATA_HOME/valet-key/shims ,
+.IR $XDG_STATE_HOME/valet-key/shims ,
 else
-.IR ~/.local/share/valet-key/shims .
+.IR ~/.local/state/valet-key/shims .
+Shims are GENERATED state, so they sit in the state root rather than the data
+root: the data root is the install payload, which
+.B setup.sh install
+replaces wholesale. An install moves shims found at the pre-2026-10 default
+.RI ( $XDG_DATA_HOME/valet-key/shims )
+into place, and
+.B doctor
+reports any it finds still there.
 .TP
 .B VALET_KEY_HOOKS
 The hooks root holding
