@@ -30,7 +30,7 @@ set -eu
 . "$(dirname "$0")/harness_lib"
 harness_init adapters
 
-AD=$HERE/libexec/adapters
+AD=$HERE/lib/adapters
 ENGINE=$(readlink -f "$HERE/bin/valet-key")
 H=$T/home
 mkdir -p "$H/.npm-global/bin" "$T/front" "$T/real"
@@ -48,7 +48,7 @@ drive() {   # <adapter> <expr> [env assignment]...
       . "$1" || exit 91        # the shared helpers, as the engine sources them
       . "$2" || exit 90
       shift 2
-      eval "$@"' _ "$HERE/libexec/adapter_lib" "$AD/$_a" "$_e"
+      eval "$@"' _ "$HERE/lib/adapter_lib" "$AD/$_a" "$_e"
 }
 
 # Adapters whose install lands under ~/.npm-global/bin (their own first
@@ -190,7 +190,7 @@ done
 # readable adapter must not silently become an agent.
 listed=$(sed -n '/^list_agents() {/,/^}/p' "$HERE/bin/valet-key")
 [ -n "$listed" ] || fail "could not extract list_agents from bin/valet-key"
-count=$(env -i sh -c "set -eu; LIBEXEC=$HERE/libexec; $listed; list_agents" |
+count=$(env -i sh -c "set -eu; VK_LIB=$HERE/lib; $listed; list_agents" |
         grep -c .)
 [ "$count" = "$_n" ] ||
   fail "the engine sees $count agents, the adapter dir holds $_n"

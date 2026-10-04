@@ -101,9 +101,9 @@ _payload_stage() {
   rm -rf -- "$_ps_new" "$_ps_old"
   mkdir -p "$_ps_new" || { bad "could not create $_ps_new"; return 1; }
   # EVERY dir the command reads, not just bin: the engine self-locates
-  # `../libexec` from its own real path, so a payload missing libexec resolves
+  # `../lib` and `../libexec` from its own real path, so a payload missing one
   # into nothing and every adapter and the slot library disappear.
-  for _d in bin libexec share man; do
+  for _d in bin lib libexec share man; do
     [ -d "$_root/$_d" ] || continue
     cp -R "$_root/$_d" "$_ps_new/" || { bad "could not copy $_d"; return 1; }
   done
@@ -276,7 +276,7 @@ do_check() {
   if [ -d "$_pay" ] && [ ! -L "$_pay" ]; then
     ok "payload is a real tree ($_pay)"
   else bad "payload missing or still a symlink ($_pay)"; fi
-  for _d in bin libexec; do
+  for _d in bin lib libexec; do
     if [ -d "$_pay/$_d" ]; then ok "payload carries $_d"
     else bad "payload has no $_d (the engine self-locates it)"; fi
   done

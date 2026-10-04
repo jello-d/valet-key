@@ -35,7 +35,7 @@ run install >/dev/null 2>&1 || fail "install errored"
 # bin/valet-key resolves its own real path and reads `../libexec` from it, so a
 # payload missing libexec resolves into nothing: no adapters, no slot library.
 [ -d "$PAY" ] && [ ! -L "$PAY" ] || fail "payload is not a real directory"
-for _d in bin libexec share man; do
+for _d in bin lib libexec share man; do
   [ -d "$PAY/$_d" ] && [ ! -L "$PAY/$_d" ] ||
     fail "payload is missing a real $_d"
 done
@@ -62,21 +62,21 @@ _out=$(env HOME="$T/home" NO_COLOR=1 VALET_KEY_CONFIG="$T/cfg" \
   VALET_KEY_POOL_ROOT="$T/pool" "$T/bin/valet-key" check 2>&1 || true)
 case $_out in
   *"no pools provisioned"*) ;;
-  *) fail "the installed command did not self-locate its libexec: $_out" ;;
+  *) fail "the installed command did not self-locate its lib: $_out" ;;
 esac
 # ...and it resolved the payload's libexec, not the source's. A doctored
 # adapter in the payload must be the one the installed command sees.
 printf 'ADAPTER_ENV=CANARY_ENV\nADAPTER_BASE=$HOME/.canary\nADAPTER_SLOTS=0\n' \
-  > "$PAY/libexec/adapters/canary"
+  > "$PAY/lib/adapters/canary"
 printf 'adapter_realbin() { echo /bin/true; }\nadapter_preexec() { :; }\n' \
-  >> "$PAY/libexec/adapters/canary"
+  >> "$PAY/lib/adapters/canary"
 _out=$(env HOME="$T/home" NO_COLOR=1 VALET_KEY_CONFIG="$T/cfg" \
   VALET_KEY_POOL_ROOT="$T/pool" "$T/bin/valet-key" doctor 2>&1 || true)
 case $_out in
   *canary*) ;;
   *) fail "the command read adapters from somewhere other than the payload" ;;
 esac
-rm -f "$PAY/libexec/adapters/canary"
+rm -f "$PAY/lib/adapters/canary"
 
 # --- the config root indexes the payload, and only SHIPPED data -------------
 # One place answers "what is configured": the user's files plus a door into the

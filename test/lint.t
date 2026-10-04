@@ -44,7 +44,7 @@ files() {
 # they are matched by location or classifier: they still have to parse.
 is_shell() {   # <path>
   case ${1#"$HERE"/} in
-    libexec/adapters/*) return 0 ;;
+    lib/adapters/*) return 0 ;;
     *_lib|*.sh|test/*.t|test/run) return 0 ;;
   esac
   head -1 "$1" 2>/dev/null | grep -q '^#!.*/sh' && return 0
@@ -97,7 +97,7 @@ done
 # other language it is. A file that is neither fell through is_shell and was
 # never parsed.
 for f in $(files); do
-  case ${f#"$HERE"/} in bin/*|libexec/*|test/*) ;; *) continue ;; esac
+  case ${f#"$HERE"/} in bin/*|lib/*|libexec/*|test/*) ;; *) continue ;; esac
   is_shell "$f" && continue
   head -1 "$f" 2>/dev/null | grep -q '^#!' && continue
   fail "${f#"$HERE"/}: classified as neither shell nor another language, so it
@@ -109,7 +109,7 @@ done
 # direction: the engine SOURCES them, and an executable adapter invites
 # someone to run it directly, where its bare `ADAPTER_*=` assignments do
 # nothing at all and it exits 0 looking successful.
-for a in "$HERE"/libexec/adapters/*; do
+for a in "$HERE"/lib/adapters/*; do
   [ -f "$a" ] || continue
   [ -x "$a" ] && fail "adapter ${a##*/} is executable; it is sourced, not run"
 done

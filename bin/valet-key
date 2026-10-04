@@ -55,10 +55,11 @@ esac
 VALET_KEY_SELF=$(readlink -f -- "$_self" 2>/dev/null || echo "$_self")
 export VALET_KEY_SELF          # adapters skip this path finding the real binary
 LIBEXEC=${VALET_KEY_SELF%/*}/../libexec
+VK_LIB=${VALET_KEY_SELF%/*}/../lib
 SLOTS="$LIBEXEC/slots"
 # Shared adapter helpers (realbin_from), sourced once before any adapter is.
 # Kept OUT of libexec/adapters/ on purpose: one file there is one agent.
-. "$LIBEXEC/adapter_lib"
+. "$VK_LIB/adapter_lib"
 VALET_KEY_CONFIG=${VALET_KEY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}\
 /valet-key}
 DEFAULT_PROFILE=${VALET_KEY_DEFAULT_PROFILE:-personal}
@@ -103,7 +104,7 @@ mk_fix()  { printf '        %s\n' "$1"; }
 # Load agent <name>'s adapter (sets ADAPTER_*), and export the slot-pool file
 # policy the slots lib reads. Fail loud on an unknown agent.
 load_adapter() {
-  _a=$LIBEXEC/adapters/$1
+  _a=$VK_LIB/adapters/$1
   [ -r "$_a" ] || die "no adapter for agent '$1' ($_a)"
   AGENT=$1
   # Clear every adapter-supplied var first, so loading a SECOND adapter in one
@@ -511,7 +512,7 @@ m_check() {
 # entire job is to speak up before a slot goes cold.
 m_stale() {
   for _ag in $(list_agents); do
-    [ -r "$LIBEXEC/adapters/$_ag" ] || continue
+    [ -r "$VK_LIB/adapters/$_ag" ] || continue
     load_adapter "$_ag"
     [ "${ADAPTER_SLOTS:-0}" = 1 ] || continue
     "$SLOTS" stale "$_ag" || true
@@ -545,7 +546,7 @@ known_profiles() {
 
 # Every installed agent (one adapter file == one agent valet-key knows).
 list_agents() {
-  for _a in "$LIBEXEC"/adapters/*; do
+  for _a in "$VK_LIB"/adapters/*; do
     [ -r "$_a" ] && printf '%s\n' "${_a##*/}"
   done
 }
@@ -572,7 +573,7 @@ check_all() {
   _rc=0; _any=0
   for _p in $("$SLOTS" pools); do
     _any=1; _ag=${_p%%/*}; _pr=${_p#*/}
-    if [ -r "$LIBEXEC/adapters/$_ag" ]; then
+    if [ -r "$VK_LIB/adapters/$_ag" ]; then
       load_adapter "$_ag"
       _check_pool "$_p" "$(profile_dir "$_pr")" || _rc=1
     else
@@ -726,7 +727,7 @@ m_doctor() {
   _any=0
   for _p in $("$SLOTS" pools); do
     _any=1; _ag=${_p%%/*}
-    [ -r "$LIBEXEC/adapters/$_ag" ] || { _dwarn "$_p: no adapter"; continue; }
+    [ -r "$VK_LIB/adapters/$_ag" ] || { _dwarn "$_p: no adapter"; continue; }
     load_adapter "$_ag"
     _c=$("$SLOTS" counts "$_p" 2>/dev/null || echo "0 0 0")
     _t=${_c%% *}; _r=${_c#* }; _cw=${_r%% *}; _l=${_r##* }
@@ -804,7 +805,7 @@ m_shim() {
   [ $# -gt 0 ] || die "usage: valet-key shim <agent>..."
   mkdir -p "$VALET_KEY_SHIMS_DIR"
   for _ag in "$@"; do
-    [ -r "$LIBEXEC/adapters/$_ag" ] || die "no adapter for agent '$_ag'"
+    [ -r "$VK_LIB/adapters/$_ag" ] || die "no adapter for agent '$_ag'"
     ln -sfn "$VALET_KEY_SELF" "$VALET_KEY_SHIMS_DIR/$_ag"
     echo "valet-key: shimmed $_ag -> $VALET_KEY_SHIMS_DIR/$_ag"
     _w=$(command -v "$_ag" 2>/dev/null || true)

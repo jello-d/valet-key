@@ -100,9 +100,10 @@ It **places a payload** rather than linking into the checkout: `install` copies
 the shipped tree to `~/.local/share/valet-key`, then links
 `~/.local/bin/valet-key` into it. That is what makes the command survive a
 provisioning layer that re-clones or wipes its source, and it is why `bin`,
-`libexec`, `share` and `man`
+`lib`, `libexec`, `share` and `man`
 all live in the one payload: the command resolves its own real path and reads
-`../libexec` from it, so a split tree would resolve into nothing. Re-run
+`../lib` and `../libexec` from it, so a split tree resolves into nothing.
+Re-run
 `install` to upgrade; it re-copies and is safe to repeat.
 
 `~/.config/valet-key` doubles as the index: alongside your `profiles`, `dirs`
@@ -388,7 +389,7 @@ seam has.
 
 ### Adapters: add an agent
 
-An adapter is a small shell fragment, `libexec/adapters/<agent>`,
+An adapter is a small shell fragment, `lib/adapters/<agent>`,
 that declares how one agent stores its identity: the env var that points it at
 its config dir, its base dir, whether it needs the slot pool (a single-use
 token to isolate) or just profile separation, and which files a slot keeps

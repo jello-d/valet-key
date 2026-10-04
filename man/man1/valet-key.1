@@ -453,7 +453,7 @@ whatever supplies the hook. valet-key can say no; it cannot BE the
 lock.
 .SH ADAPTERS
 An adapter is a shell fragment under
-.I libexec/adapters/<agent>
+.I lib/adapters/<agent>
 sourced by the engine. It declares the config-dir environment variable
 .RB ( ADAPTER_ENV ),
 the base config directory
@@ -627,7 +627,7 @@ integrator's styling code.
 .TP
 .I bin/valet-key
 The engine. Self-locates
-.I libexec
+.I lib
 as a sibling of its own resolved path, so an install is a symlink and needs no
 configuration.
 .I share
@@ -636,7 +636,7 @@ holds templates and examples for a human; nothing in the engine reads it.
 .I libexec/slots
 The credential-slot pool library.
 .TP
-.I libexec/adapters/<agent>
+.I lib/adapters/<agent>
 Per-agent adapters. One file here is one agent valet-key knows about, which is
 what
 .BR shim ", " check " and " doctor
@@ -650,7 +650,7 @@ because valet-key is POSIX shell with no runtime dependencies and merging a
 config document is not shell work. An agent with no helper simply has no
 reconciliation.
 .TP
-.I libexec/adapter_lib
+.I lib/adapter_lib
 Helpers shared by every adapter, sourced before them: notably the real-
 binary lookup, so the
 .BI < AGENT >_BIN
@@ -662,6 +662,7 @@ where it would become a phantom agent.
 .I setup.sh
 The package's own installer: links
 .IR bin ,
+.IR lib ,
 .IR libexec ,
 .IR share ,
 and the man pages into a prefix

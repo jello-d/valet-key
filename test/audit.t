@@ -28,9 +28,9 @@ harness_init audit
 
 H=$T/home
 mkdir -p "$H" "$T/pkg" "$T/front" "$T/cfg" "$T/tree"
-cp -R "$HERE/bin" "$HERE/libexec" "$T/pkg/"
+cp -R "$HERE/bin" "$HERE/lib" "$HERE/libexec" "$T/pkg/"
 VK=$T/pkg/bin/valet-key
-AD=$T/pkg/libexec/adapters
+AD=$T/pkg/lib/adapters
 
 # Our adapter set: claude (the real pooled one) plus two synthetic agents that
 # exist to put doctor's shim verdicts under our control. The other bundled
