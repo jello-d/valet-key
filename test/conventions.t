@@ -8,7 +8,8 @@
 # drift, so the copies cannot quietly diverge. EDIT THE CANONICAL COPY, then
 # re-seed: `tackup notes conventions`.
 #
-# It enforces the "Code style" section of ~/src/shared-notes/_common.md. That
+# It enforces the "Code style" section of ~/src/shared-notes/_common.md, and
+# since 2026-10-04 the "package tree is FHS" section too (rules 9 and 10). That
 # file is the SPEC and this is the ENFORCEMENT; they live beside each other on
 # purpose, because a rule whose checker lives somewhere else drifts from it.
 #
@@ -42,6 +43,14 @@ ROOT=$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null) || ROOT=
   exit 1; }
 EXEMPT=$HERE/conventions.exempt
 cd "$ROOT"
+
+# THE PACKAGE'S OWN NAME, the subject of rule 10. setup.sh's PKG= when there is
+# one, because that is what the installer itself uses; otherwise the repo
+# directory, which is what a clone is called. Never empty, so rule 10 always has
+# something to compare against rather than silently matching everything.
+PKGNAME=$(sed -n 's/^PKG=\([A-Za-z0-9_.-]*\).*/\1/p' setup.sh 2>/dev/null \
+          | head -1)
+[ -n "$PKGNAME" ] || PKGNAME=${ROOT##*/}
 
 bad=''
 note() { bad="$bad
@@ -110,6 +119,11 @@ done > "$FILES"
 [ -s "$FILES" ] ||
   { echo "FAIL conventions: no tracked text files" >&2; exit 1; }
 N=$(wc -l < "$FILES")
+# COUNTED AND REPORTED, because rules 9 and 10 are vacuous in a repo with none
+# of the three directories and a bare `ok` cannot be told from a rule that
+# stopped matching. mux's lint set shrank from 149 files to 129 unnoticed for
+# exactly that reason; a pass line that states what it measured can be caught.
+NTREE=$(grep -cE '^(bin|lib|libexec)/' "$FILES" || :)
 
 # Language by CONTENT, never by name: the naming rule strips suffixes off
 # executables, so a name-keyed classifier would miss every one of them.
@@ -273,6 +287,46 @@ d_binmode() {   # <file> -> shebang/exec-bit disagreement in bin/, else empty
   _x=no; [ -x "$1" ] && _x=yes
   [ "$_s" = "$_x" ] && return 0
   [ "$_s" = yes ] && echo unrunnable || echo noshebang
+}
+# RULES 9 AND 10 BELONG WITH 4, 5 AND 6 and are numbered after 8 only to spare
+# a vendored file the churn of renumbering. Those three ask about one FILE (its
+# name, its mode, its shebang); these two ask where it SITS, which is the half
+# that was unenforced: rule 4 refuses an executable *_lib and says nothing about
+# a *_lib sitting in libexec/, which is exactly the state nine repos were in.
+#
+# d_tree IS PURE: it takes the exec bit as a WORD rather than stat'ing the path,
+# so every one of its five answers is provable in both directions without a
+# fixture on disk, and the self-test can assert the exact WORD. That matters
+# more here than for 4/5/6, because this detector returns a VOCABULARY and the
+# rule below dispatches on it: a detector answering the wrong word would pass an
+# is-it-empty check, match no case arm, and report nothing at all.
+#
+# ANCHORED AT THE REPO ROOT, deliberately. `lib/*` and not `*/lib/*`, because
+# tackup's link/lib is a PUBLISHED tree whose files are uniformly 0755 by a
+# written decision (its CLAUDE.md says so, and the reason is that telling a
+# sourced helper from an exec'd one by inspection is a losing game there). An
+# unanchored pattern would fail that repo on every file it ships.
+d_tree() {   # <relpath> <exec: x|-> -> one word for a misplacement, else empty
+  case $1 in
+  lib/*)
+    if [ "$2" = x ]; then echo lib-exec; return 0; fi
+    case ${1#lib/} in
+      */*) ;;                        # a subdirectory already states the role
+      *_lib|*_lib.py|*.py) ;;        # carries its own marker
+      *) echo lib-unmarked ;;
+    esac ;;
+  libexec/*)
+    case $1 in *_lib|*_lib.py) echo lib-misplaced; return 0 ;; esac
+    if [ "$2" != x ]; then echo libexec-noexec; fi ;;
+  bin/*)
+    case $1 in *_lib|*_lib.py) echo lib-misplaced ;; esac ;;
+  esac
+}
+d_double() {   # <relpath> <pkg> -> non-empty when a dir re-names the package
+  [ -n "${2:-}" ] || return 0
+  case $1 in
+    "lib/$2"/*|"libexec/$2"/*) echo doubled ;;
+  esac
 }
 d_roff() {   # <file> -> non-empty when a roff dash escape is present
   grep -oE '\\[([]e[mn][])]?' "$1" 2>/dev/null | head -1
@@ -506,6 +560,17 @@ prove() {   # <name> <expect-hit: y|n> <finding>
   NPROVEN=$((NPROVEN + 1))
 }
 
+# A VOCABULARY NEEDS ITS WORDS PROVEN. `prove` asks only whether a detector
+# fired, which is the whole question for rules 1 to 8: their detectors answer
+# hit-or-not. d_tree answers one of FIVE words and rule 9 dispatches on which,
+# so a detector returning the wrong word fires, passes `prove`, matches no case
+# arm, and reports nothing. This asserts the exact word instead.
+prove_word() {   # <name> <expected-word> <finding>
+  if [ "$3" = "$2" ]; then NPROVEN=$((NPROVEN + 1)); return; fi
+  note "SELF-TEST: the $1 detector answered '$3' where '$2' was expected, so
+  rule 9's case below matches nothing and the misplacement goes unreported"
+}
+
 # printf, NOT awk: `awk 'BEGIN{..}END{..}'` with no file argument reads STDIN
 # and waits forever, which hung this section the first time it ran. A test that
 # BLOCKS is worse than one that fails, so nothing here reads stdin.
@@ -599,6 +664,35 @@ printf '#!/bin/sh\nexit 0\n' > "$SELF/bin/cmd";  chmod -x "$SELF/bin/cmd"
 printf '#!/bin/sh\nexit 0\n' > "$SELF/bin/ok";   chmod +x "$SELF/bin/ok"
 prove 6-binmode y "$(d_binmode "$SELF/bin/cmd")"
 prove 6-binmode n "$(d_binmode "$SELF/bin/ok")"
+
+# RULE 9 IS PROVED BY WORD, every arm of the case below it, because the rule
+# dispatches on which word comes back. No fixture on disk: d_tree is pure, so
+# the exec bit is an argument and every combination is reachable.
+prove_word 9-lib-exec       lib-exec       "$(d_tree lib/a_lib x)"
+prove_word 9-lib-unmarked   lib-unmarked   "$(d_tree lib/plain -)"
+prove_word 9-lib-misplaced  lib-misplaced  "$(d_tree libexec/a_lib x)"
+prove_word 9-bin-misplaced  lib-misplaced  "$(d_tree bin/a_lib x)"
+prove_word 9-libexec-noexec libexec-noexec "$(d_tree libexec/cmd -)"
+# THE CLEAN CASES, and the three EXEMPTIONS the rule grants on purpose: a
+# subdirectory of lib/ states the role itself, a language module suffix is a
+# marker, and anything outside the three directories is not this rule's business
+# (which is what spares tackup's link/lib, so that is asserted and not assumed).
+prove 9-tree n "$(d_tree lib/a_lib -)"
+prove 9-tree n "$(d_tree lib/adapters/claude -)"
+prove 9-tree n "$(d_tree lib/module.py -)"
+prove 9-tree n "$(d_tree libexec/cmd x)"
+prove 9-tree n "$(d_tree bin/cmd x)"
+prove 9-tree n "$(d_tree link/lib/helper x)"
+prove 9-tree n "$(d_tree share/pkg/data.conf -)"
+
+# RULE 10, both directions, and the empty-package guard: an unknown package name
+# must match NOTHING rather than every path, which is the failure that would
+# turn this rule into noise on the first repo whose setup.sh it cannot read.
+prove 10-double y "$(d_double libexec/demo/cmd demo)"
+prove 10-double y "$(d_double lib/demo/x_lib demo)"
+prove 10-double n "$(d_double libexec/cmd demo)"
+prove 10-double n "$(d_double libexec/demo/cmd '')"
+prove 10-double n "$(d_double libexec/demolition/cmd demo)"
 
 
 if [ -n "$bad" ]; then
@@ -748,6 +842,57 @@ if [ "$tracked" -gt 20 ] && [ "$N" -lt 5 ]; then
   the exemption list has swallowed the tree and these rules are vacuous"
 fi
 
+# --- 9. THE IMPLEMENTATION DIRECTORY SAYS LOADED OR EXECUTED -----------------
+# FHS, and a single-source-of-truth rule rather than tidiness: lib/ is what a
+# package SOURCES or imports, libexec/ what it EXECUTES and never puts on PATH.
+# When the directory carries that, the name and the mode stop being the only
+# signals and can no longer quietly disagree with each other.
+#
+# MEASURED, 2026-10-04: nine of the spun-out packages disagreed about this, the
+# sharpest pair being muster's lib/ holding eleven sourced files while
+# severance's libexec/ held eleven sourced files. Identical content, two names.
+#
+# A BINARY OR EXEMPT FILE NEVER REACHES HERE, because the corpus drops both
+# above, so a compiled object under lib/ is not a finding and does not need an
+# exemption to stay quiet.
+while IFS= read -r f; do
+  # `if`, not `[ ... ] && _x=x`: an AND-list is a trap in a loop body (see rule
+  # 4) and the explicit form costs nothing.
+  if [ -x "$f" ]; then _x=x; else _x=-; fi
+  case $(d_tree "$f" "$_x") in
+    lib-exec)
+      note "$f: is in lib/, which is SOURCED, and is EXECUTABLE. The bit is a
+  lie: running it does nothing useful." ;;
+    lib-unmarked)
+      note "$f: is in lib/ but carries no loadable marker (*_lib, or a language
+  module suffix). A file in a SUBDIRECTORY of lib/ is fine, since the directory
+  states the role; this one is at the top." ;;
+    lib-misplaced)
+      note "$f: is named as a sourced library but sits outside lib/. libexec/ is
+  EXECUTED and bin/ is on PATH; a sourced library belongs in lib/." ;;
+    libexec-noexec)
+      note "$f: is in libexec/, which is EXECUTED, and is NOT executable. It
+  resolves and then fails to run, which reads as a missing feature." ;;
+  esac
+done < "$FILES"
+
+# --- 10. NEITHER DIRECTORY RE-NAMES ITS OWN PACKAGE --------------------------
+# libexec/<pkg>/ is a SHARED-prefix vestige. When every package's helpers landed
+# in one ~/.local/libexec, each needed a namespace of its own; once the prefix
+# is package-private (a payload at ~/.local/share/<pkg>, or /opt/<pkg>) the name
+# is simply written twice, as <payload>/libexec/hwdp/cmd was before flattening.
+#
+# NOT a guess about which prefix a package installs into: the doubling is wrong
+# in a private prefix and unnecessary in a shared one, because a shared prefix
+# namespaces by the <pkg> directory it already has.
+while IFS= read -r f; do
+  if [ -n "$(d_double "$f" "$PKGNAME")" ]; then
+    note "$f: repeats the package name inside its own tree. Flatten it: the
+  prefix already namespaces '$PKGNAME', so this writes the name twice."
+  fi
+done < "$FILES"
+
 finish
 pass "$N files, $(( $(wc -l < "$FILES.sh") + $(wc -l < "$FILES.bash") ))\
- shell, $(wc -l < "$FILES.py") python, $NPROVEN detectors proven"
+ shell, $(wc -l < "$FILES.py") python, $NTREE in bin/lib/libexec,\
+ $NPROVEN detectors proven"
