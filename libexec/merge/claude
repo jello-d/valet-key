@@ -4,7 +4,7 @@
 WHY THIS EXISTS. A slot's .claude.json is a PRIVATE COPY, not a symlink,
 because the agent rewrites it constantly and N sessions sharing one inode
 would interleave read-modify-write and lose each other's edits. That is the
-right call -- but it means everything the agent records there is per-slot, and
+right call, but it means everything the agent records there is per-slot, and
 `projects[<path>]` is where trust, per-project allowed tools and MCP approvals
 live. So the same repo has to be trusted again on every slot it has not been
 opened in yet, and a freshly provisioned slot starts knowing nothing.
@@ -14,22 +14,22 @@ because every writer still owns its own file; the worst case is a merge that
 loses a cycle and is redone on the next one, never a corrupted config.
 
 WHAT IT MERGES, AND WHAT IT REFUSES TO. Only `projects`. Everything else in
-each destination is left exactly as found -- oauthAccount and userID above all,
+each destination is left exactly as found: oauthAccount and userID above all,
 which are identity and must never move even between slots of one pool, and the
 counters and caches, for which a merge would be meaningless.
 
 WHICH COPY WINS, AND WHY IT IS NOT SIMPLY THE NEWEST FILE. The first version of
 this used file mtime as the clock: newest file wins, per project. That is
 WRONG, and it cost real grants. A file's mtime says when ANY part of it last
-changed, so a busy slot -- one with a live session bumping a counter every few
-seconds -- becomes "newest" for EVERY project it contains, including ones it
+changed, so a busy slot (one with a live session bumping a counter every few
+seconds) becomes "newest" for EVERY project it contains, including ones it
 has never been opened in and knows nothing about. Its untouched
 `hasTrustDialogAccepted: false` stub then beat another slot's real grant, and
 trust came back to be re-answered after every reboot.
 
 The clock has to be per ENTRY, and the file gives us none. So we keep our own:
 STATE records the value each project converged on last time. A member's entry
-competes only if it DIFFERS from that -- which is precisely "this member
+competes only if it DIFFERS from that, which is precisely "this member
 changed it since we last agreed". An untouched stub is identical to what the
 last merge handed out, so it cannot win. If nobody changed a project, the
 converged value stands, however many times the files around it were rewritten.
@@ -131,7 +131,7 @@ def choose(key, candidates, previous, bootstrap):
 
     <candidates> is [(mtime, entry)] from members that CHANGED this project
     since the last merge. Empty means nobody did, so the converged value
-    stands regardless of how often the files were rewritten -- that is the
+    stands regardless of how often the files were rewritten, which is the
     whole point.
     """
     if not candidates:
@@ -152,8 +152,8 @@ def adopt(name, dst, src):
     """Fold <src> into <dst>, losing nothing, and leave <dst> ordered.
 
     The migration path for a file moving from private-per-slot to shared. The
-    slot's copy holds records NOTHING else has -- 754 prompts on the pool this
-    was written for -- so it is merged into the shared file, never discarded.
+    slot's copy holds records NOTHING else has (754 prompts on the pool this
+    was written for), so it is merged into the shared file, never discarded.
     Idempotent: adopting twice is adopting once, because the union dedupes.
     """
     if name not in ADOPTABLE:
