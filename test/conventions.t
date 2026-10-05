@@ -462,13 +462,57 @@ def prose_cfam(lines):
             got[n] = m.group(1)
     return got
 
+def dq(s):
+    """Double quotes that actually DELIMIT, so an escaped `\\"` does not count.
+    Without this an escaped quote flips the parity and the multi-line tracking
+    below either stops early or swallows the rest of the file."""
+    return s.replace('\\"', '').count('"')
+
+# How many lines a printed message may span before this stops believing it is
+# one. A QUOTE COUNT CANNOT PARSE NESTED SHELL QUOTING: `"$(printf "")")"` is
+# balanced to a shell and ODD to a counter, so without a bound the tracking
+# runs to the next odd line, which measured 191 lines away in one record file
+# and reported planted diff lines as prose. Measured across sixteen repos: 2064
+# openers, median span 1 line, 95th percentile 4, and every span past about ten
+# is a parity artifact rather than a sentence. The continuation is BUFFERED and
+# only counted once the string actually CLOSES, so abandoning a runaway
+# contributes nothing at all rather than up to this many lines of code.
+MSG_MAX = 6
+
 def prose_sh(lines):
     # A comment line, plus the QUOTED PARTS of a line that PRINTS something. An
     # output string is prose the user reads, and scanning only comments missed
     # every one of them: 85 were live in tackup alone. Narrow to a recognised
     # output call so an ordinary assignment holding a `--` flag stays out.
     got = {}
+    # The line number where an output string is still OPEN, or 0.
+    #
+    # A MULTI-LINE MESSAGE WAS INVISIBLE, which is this branch's third hole and
+    # the same shape as the first two: the segment extractor needs a CLOSING
+    # quote on the same line, so a `_warn "...` that wraps onto the next line
+    # yields no segments on ANY of its lines and the whole message went
+    # unscanned. That is not a rare form here: a multi-line _warn/_fault/_bad
+    # is how this fleet writes anything longer than a clause, and 39 candidate
+    # dashes were hiding in 25 files across sixteen repos. Found while reading
+    # one such message in `notes` that said `undeclared -- gitignore ...` with
+    # every check green.
+    cont = 0
+    buf = {}
     for n, l in enumerate(lines, 1):
+        if cont:
+            # Inside the message: the whole line is prose, up to the quote that
+            # ends it. An interior line has no delimiting quote at all.
+            if dq(l) % 2 == 1:
+                buf[n] = l[:l.rindex('"')]
+                got.update(buf)      # it CLOSED, so it really was a message
+                buf = {}
+                cont = 0
+            elif n - cont >= MSG_MAX:
+                buf = {}             # never closed: it was not a message
+                cont = 0
+            else:
+                buf[n] = l
+            continue
         m = re.match(r'^\s*#(.*)$', l)
         if m:
             got[n] = m.group(1)
@@ -491,6 +535,14 @@ def prose_sh(lines):
                     if not banner(x) and x.strip() != '--']
             if keep:
                 got[n] = ' | '.join(keep)
+            # An ODD count means this line OPENED a message it did not close,
+            # so everything after that quote is the first line of it and the
+            # rest arrives above. Set deliberately AFTER the segment join, so a
+            # line carrying both a complete string and an opening one keeps the
+            # part that matters: the one still being written.
+            if dq(l) % 2 == 1:
+                buf = {n: l[l.index('"') + 1:]}
+                cont = n
     return got
 
 def prose_lines(path):
@@ -740,7 +792,14 @@ printf '/* a clause -- and its continuation */\n'   > "$SELF/dd.css"
 printf '# a \140span and then -- the rest\n'        > "$SELF/dd-tick.sh"
 printf '# at install -- and the rest\n'             > "$SELF/dd-mid.sh"
 printf 'printf %s\n' "'a clause -- and more\\n'"    > "$SELF/dd-sq.sh"
-for _f in dd-pyc dd.css dd-tick.sh dd-mid.sh dd-sq.sh; do
+# A MULTI-LINE message, which is how this fleet writes anything longer than a
+# clause and which the per-line segment extractor could not see at all: it
+# needs a CLOSING quote on the same line, so a wrapped `_warn "...` yielded no
+# segments on any of its lines. The dash is on the CONTINUATION line here,
+# because that is the half that was invisible.
+printf '_warn "opens here and keeps going\n  a clause -- and its rest"\n' \
+  > "$SELF/dd-ml.sh"
+for _f in dd-pyc dd.css dd-tick.sh dd-mid.sh dd-sq.sh dd-ml.sh; do
   printf '%s\n' "$SELF/$_f" > "$SELF/ddlist.$_f"
 done
 prove 7-dd-shebang y "$(d_dashdash "$SELF/ddlist.dd-pyc")"
@@ -748,6 +807,7 @@ prove 7-dd-cfam    y "$(d_dashdash "$SELF/ddlist.dd.css")"
 prove 7-dd-tick    y "$(d_dashdash "$SELF/ddlist.dd-tick.sh")"
 prove 7-dd-midword y "$(d_dashdash "$SELF/ddlist.dd-mid.sh")"
 prove 7-dd-squote  y "$(d_dashdash "$SELF/ddlist.dd-sq.sh")"
+prove 7-dd-multiline y "$(d_dashdash "$SELF/ddlist.dd-ml.sh")"
 
 printf '#!/bin/sh\nif then fi\n' > "$SELF/bad.sh"
 printf '#!/bin/sh\nexit 0\n'     > "$SELF/good.sh"
