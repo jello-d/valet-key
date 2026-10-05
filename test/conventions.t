@@ -359,55 +359,103 @@ DASH  = re.compile(r'(?:(?<=\s)|^)(?<!-)--(?!-)(?=\s|$)')
 OUTCALL = re.compile(r'(^|[;&|(]|\bthen\b|\belse\b|\bdo\b)\s*'
                      r'(printf|echo|_ok|_bad|_warn|_ignore|_fault|_status|'
                      r'fail|pass|die|note|say|warn|bad)\b')
-ARGM  = re.compile(r'(^|[;&|(`\s])(cd|set|eval|exec|printf|command|readlink|'
+# ANCHORED to a command POSITION rather than to any preceding whitespace.
+# `install`, `set`, `test`, `env`, `find`, `dd` and `mount` are ordinary
+# English, and with 40 characters of slack after any of them the loose form read
+# `systemctl -- so there is NO sudo` as an end-of-options marker. A real marker
+# sits at the START of a command, which is what this asks; the self-test's
+# `cd --` fixture passes for exactly that reason.
+# A QUOTE opens a command position too, because a quoted command TEMPLATE is
+# still a command: `"kubectl exec %h -- %q"` is kubectl's own separator, and a
+# python STRING token arrives with its delimiters attached, so without this the
+# anchor can never see the command that starts the string. So does a LITERAL
+# `\n`, which inside a quoted string is a newline and therefore a command
+# separator: a generated stub written as `'#!/bin/sh\nprintf -- "..."'` puts a
+# real end-of-options marker at the start of its second line.
+ARGM  = re.compile(r'(^|[;&|(`"\']|\\n)\s*(cd|set|eval|exec|printf|command|'
+                   r'readlink|'
                    r'pgrep|pkill|xargs|install|chown|chmod|rm|cp|mv|grep|sed|'
                    r'awk|find|git|echo|tar|dd|env|test|parted|sgdisk|mkfs|'
                    r'mount|umount|dpkg|apt-get|systemctl|kubectl|ssh|sudo|'
-                   r'\[)\b[^`]{0,40}--(\s|$)')
+                   r'logger|\[)\b[^`]{0,40}--(\s|$)')
 
 def visible(line):
+    # An ODD backtick count means one of them is UNBALANCED, which is routine
+    # at 80 columns, where an inline code span wrapping across lines leaves one
+    # backtick on each. Keeping the even-indexed halves then silently EATS the
+    # rest of the line, so an unmatched backtick is the literal character it is.
     parts = line.split('`')
+    if len(parts) % 2 == 0:
+        return line
     return ''.join(p for k, p in enumerate(parts) if k % 2 == 0)
 
 def banner(line):
     t = line.strip().lstrip('#').strip()
     return len(t) > 3 and t.startswith('--') and t.endswith('--')
 
-def prose_lines(path):
-    """{lineno: text} for the lines that are PROSE in this file's language."""
+def lang(path, txt):
+    """This file's LANGUAGE, by suffix and then by SHEBANG. The shebang half is
+    load-bearing rather than a nicety: the house rule gives an EXECUTED file a
+    BARE NAME, so every python COMMAND in these trees lacks a .py, was read as
+    shell, and had its docstrings scanned by nothing at all."""
+    if path.endswith('.py'):
+        return 'py'
+    if re.search(r'\.[1-8]$', path) or '/man/' in path:
+        return 'roff'
+    if path.endswith('.md'):
+        return 'md'
+    if re.search(r'\.(css|jsonc|c|h|cc|cpp|hpp|rs|go|js|ts)$', path):
+        return 'cfam'
+    if re.match(r'^#!.*\bpython3?\b', txt.split('\n', 1)[0]):
+        return 'py'
+    return 'sh'
+
+def prose_py(txt):
+    got = {}
     try:
-        txt = open(path, encoding='utf-8', errors='replace').read()
+        for tok in tokenize.generate_tokens(io.StringIO(txt).readline):
+            if tok.type not in (tokenize.COMMENT, tokenize.STRING):
+                continue
+            for off, l in enumerate(tok.string.splitlines()):
+                got[tok.start[0] + off] = l
     except Exception:
         return {}
-    if path.endswith('.py'):
-        got = {}
-        try:
-            for tok in tokenize.generate_tokens(io.StringIO(txt).readline):
-                if tok.type not in (tokenize.COMMENT, tokenize.STRING):
-                    continue
-                for off, l in enumerate(tok.string.splitlines()):
-                    got[tok.start[0] + off] = l
-        except Exception:
-            return {}
-        return got
-    lines = txt.splitlines()
-    if path.endswith('.md'):
-        got, fence = {}, False
-        for n, l in enumerate(lines, 1):
-            if l.strip().startswith('```'):
-                fence = not fence
-                continue
-            if fence or re.match(r'^\s{4,}\S', l):
-                continue
+    return got
+
+def prose_md(lines):
+    got, fence = {}, False
+    for n, l in enumerate(lines, 1):
+        if l.strip().startswith('```'):
+            fence = not fence
+            continue
+        if fence or re.match(r'^\s{4,}\S', l):
+            continue
+        got[n] = l
+    return got
+
+def prose_cfam(lines):
+    """C-family COMMENTS, which the `#` branch can never see: a .css or .jsonc
+    file carries its prose in `/* */` and `//` and has no `#` at all, so it was
+    scanned by nothing. 32 of tackup's violations were waybar comments."""
+    got, block = {}, False
+    for n, l in enumerate(lines, 1):
+        s = l.strip()
+        if block:
             got[n] = l
-        return got
-    if re.search(r'\.[1-8]$', path) or '/man/' in path:
-        # ROFF: a line opening with . or ' is a CONTROL line (a macro; `.B`
-        # legitimately bolds a literal double hyphen), and everything else is
-        # body PROSE, which the `#`-comment branch below would never have seen.
-        # Measured across 9 man pages: zero violations, so this was free.
-        return {n: l for n, l in enumerate(lines, 1)
-                if l[:1] not in ('.', "'")}
+            if '*/' in s:
+                block = False
+            continue
+        if s.startswith('/*'):
+            got[n] = l
+            if '*/' not in s[2:]:
+                block = True
+            continue
+        m = re.search(r'//(.*)$', l)
+        if m:
+            got[n] = m.group(1)
+    return got
+
+def prose_sh(lines):
     # A comment line, plus the QUOTED PARTS of a line that PRINTS something. An
     # output string is prose the user reads, and scanning only comments missed
     # every one of them: 85 were live in tackup alone. Narrow to a recognised
@@ -421,12 +469,45 @@ def prose_lines(path):
             # PER SEGMENT, and banners dropped here: joining `"-- tail --"` with
             # the next argument hides the symmetric shape and reports a divider
             # as prose. Each quoted string is judged as the string it is.
-            segs = [(a if a is not None else b) for a, b in
+            # `a or b`, NEVER `a if a is not None else b`: re.findall yields
+            # the EMPTY STRING for a group that did not participate, not None,
+            # so the old form picked the empty double-quote group for every
+            # SINGLE-quoted string and this whole branch only ever saw the
+            # double-quoted ones. In shell that is most printed text.
+            segs = [(a or b) for a, b in
                     re.findall(r'"([^"]*)"|\'([^\']*)\'', l)]
-            keep = [x for x in segs if not banner(x)]
+            # A segment that IS the token, `--` and nothing else, is syntax
+            # whatever it is doing: an end-of-options marker, or a literal pair
+            # handed to a command as data (`tr ':.' '--'`). It cannot be prose,
+            # because prose needs words either side and this segment has none.
+            keep = [x for x in segs
+                    if not banner(x) and x.strip() != '--']
             if keep:
                 got[n] = ' | '.join(keep)
     return got
+
+def prose_lines(path):
+    """{lineno: text} for the lines that are PROSE in this file's language."""
+    try:
+        txt = open(path, encoding='utf-8', errors='replace').read()
+    except Exception:
+        return {}
+    kind = lang(path, txt)
+    if kind == 'py':
+        return prose_py(txt)
+    lines = txt.splitlines()
+    if kind == 'md':
+        return prose_md(lines)
+    if kind == 'cfam':
+        return prose_cfam(lines)
+    if kind == 'roff':
+        # ROFF: a line opening with . or ' is a CONTROL line (a macro; `.B`
+        # legitimately bolds a literal double hyphen), and everything else is
+        # body PROSE, which the `#`-comment branch would never have seen.
+        # Measured across 9 man pages: zero violations, so this was free.
+        return {n: l for n, l in enumerate(lines, 1)
+                if l[:1] not in ('.', "'")}
+    return prose_sh(lines)
 
 out = []
 for p in open(sys.argv[1]).read().split():
@@ -622,10 +703,15 @@ printf 'spelled with a plain - hyphen\n' > "$SELF/roffclean"
 prove 7-roff y "$(d_roff "$SELF/roffy")"
 prove 7-roff n "$(d_roff "$SELF/roffclean")"
 
-# The double-dash detector, over a LIST like the real rule takes. Four samples:
-# prose must fire; an argument marker, a divider and an opted-out line must
-# not. The opt-out is proven here because an escape hatch nobody tests is one
+# The double-dash detector, over a LIST like the real rule takes. Four base
+# samples: prose must fire; an argument marker, a divider and an opted-out line
+# must not. The opt-out is proven because an escape hatch nobody tests is one
 # that silently stops working, and then every marked line is unchecked.
+# conventions: allow -- every fixture below PLANTS the violation it proves, so
+# this paragraph opts out of the rule it tests. The marker must sit ENTIRELY on
+# one line: the pattern wants `conventions:` and the dashes together, so
+# wrapping it across two lines suppresses nothing and reports the marker
+# itself. The blank line after the last prove ends the suppression.
 printf '# a clause -- and its continuation\n'      > "$SELF/dd.sh"
 printf '# cd -- /some/path is an argument marker\n' > "$SELF/dd-arg.sh"
 printf '# --- a divider ---------------------\n'   > "$SELF/dd-div.sh"
@@ -636,6 +722,25 @@ printf '%s\n' "$SELF/dd-arg.sh" "$SELF/dd-div.sh" "$SELF/dd-ok.sh" \
   > "$SELF/ddlist.good"
 prove 7-dashdash y "$(d_dashdash "$SELF/ddlist.bad")"
 prove 7-dashdash n "$(d_dashdash "$SELF/ddlist.good")"
+# FIVE MORE, one per gap that made this rule report a clean tree over 183 real
+# violations in sixteen repos (2026-10-05). Each is named for its gap, so a
+# regression says which half broke rather than just "dashdash". The backtick
+# fixture builds its backtick from \140 so THIS file holds none on that line:
+# a literal one would block the argument-marker exclusion that keeps the line
+# above from reading as a violation of itself.
+printf '#!/usr/bin/env python3\n"""A clause -- and more."""\n' > "$SELF/dd-pyc"
+printf '/* a clause -- and its continuation */\n'   > "$SELF/dd.css"
+printf '# a \140span and then -- the rest\n'        > "$SELF/dd-tick.sh"
+printf '# at install -- and the rest\n'             > "$SELF/dd-mid.sh"
+printf 'printf %s\n' "'a clause -- and more\\n'"    > "$SELF/dd-sq.sh"
+for _f in dd-pyc dd.css dd-tick.sh dd-mid.sh dd-sq.sh; do
+  printf '%s\n' "$SELF/$_f" > "$SELF/ddlist.$_f"
+done
+prove 7-dd-shebang y "$(d_dashdash "$SELF/ddlist.dd-pyc")"
+prove 7-dd-cfam    y "$(d_dashdash "$SELF/ddlist.dd.css")"
+prove 7-dd-tick    y "$(d_dashdash "$SELF/ddlist.dd-tick.sh")"
+prove 7-dd-midword y "$(d_dashdash "$SELF/ddlist.dd-mid.sh")"
+prove 7-dd-squote  y "$(d_dashdash "$SELF/ddlist.dd-sq.sh")"
 
 printf '#!/bin/sh\nif then fi\n' > "$SELF/bad.sh"
 printf '#!/bin/sh\nexit 0\n'     > "$SELF/good.sh"
