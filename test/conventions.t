@@ -37,6 +37,13 @@ set -eu
 # project it audited the CHECKOUT and passed, with the clone never read. Same
 # commit, same files, opposite verdicts, and the passing one was the lie.
 # A vendored checker must be anchored to what it is vendored beside.
+# shellcheck disable=SC1007  # `CDPATH= cd` neutralises a set CDPATH for ONE
+# command and is the correct idiom; shellcheck reads it as an empty assignment.
+# This directive is NOT optional decoration: a repo whose lint shellchecks
+# every *.t lints this file too, and without it that repo's whole suite is RED
+# for a line it did not write and must not edit. bootique was, since the
+# 2026-10-02 anchor fix landed here. Every other caller of this idiom in the
+# fleet already carries the same disable.
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null) || ROOT=
 [ -n "$ROOT" ] || { echo "FAIL conventions: $HERE is not in a git repo" >&2
