@@ -193,7 +193,9 @@ The pool is the heart of it:
   would be quietly undone by a stale copy on another.
 - **Cap awareness.** Where an agent records an absolute token cap that
   refreshing can't extend, `valet-key stale` surfaces slots nearing it so you
-  can re-login first.
+  can re-login first. `valet-key login stale` does the re-logins, skipping any
+  slot a live session holds (signing in there would rotate the token out from
+  under it) and reporting, per slot, whether the cap actually moved.
 
 ## Commands
 

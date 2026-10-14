@@ -115,6 +115,18 @@ name within the config dir" ;;
     pm=$(drive "$a" 'printf %s "${ADAPTER_PROC_MATCH-}"')
     [ -n "$pm" ] || fail "$a: pooled but declares no ADAPTER_PROC_MATCH (a \
 lease could be reclaimed from a live session after a pid is reused)"
+    # A pooled agent must name its SIGN-IN command, because the pool has
+    # re-login verbs. login force and login stale both target slots that are
+    # already WARM, and a warm slot's agent is AUTHENTICATED: launched bare it
+    # simply opens a session, so there is no sign-in to complete and the cap
+    # those verbs exist to move never moves. claude shipped with this empty
+    # for as long as the pool has existed, which is how a stale re-login came
+    # to print "sign in, then exit to record it" over an ordinary session and
+    # then report nothing at all about whether the key had been refreshed.
+    la=$(drive "$a" 'printf %s "${ADAPTER_LOGIN_ARGS-}"')
+    [ -n "$la" ] || fail "$a: pooled but declares no ADAPTER_LOGIN_ARGS; the \
+re-login verbs target WARM slots, where the bare agent is already \
+authenticated and offers no sign-in"
     # The cred file must never be listed as shared or seeded, because either
     # would
     # copy or link the very file the pool exists to keep private.

@@ -37,6 +37,15 @@ ADAPTER_MERGE_FILES=.claude.json
 # slot login. Declared (not unset in adapter_preexec) so the slots lib honours
 # it for `valet-key login` too.
 ADAPTER_UNSET_ENV=ANTHROPIC_API_KEY
+# How to reach the SIGN-IN rather than the agent. Bare `claude` is the whole
+# interactive UI: on a COLD slot it happens to open onboarding, but on a WARM
+# one it is already authenticated, so it just starts a session and there is no
+# sign-in to complete. `login force` and `login stale` both target warm slots,
+# so both were asking the user to do something the launched command does not
+# offer, and the only way through was to know to type `/login` inside.
+# `claude auth login` is the real flow, verified present on both boxes
+# 2026-10-14 (`claude auth` also carries logout and a read-only status).
+ADAPTER_LOGIN_ARGS='auth login'
 # A slot's hard cap: Claude records an absolute refresh-token expiry (ms epoch);
 # the slots lib pulls it with this sed pattern to warn before a slot goes cold.
 ADAPTER_EXP_PATTERN='.*"refreshTokenExpiresAt":\([0-9][0-9]*\).*'

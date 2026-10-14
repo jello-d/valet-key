@@ -122,6 +122,21 @@ re-logs the oldest warm slot;
 re-logs every slot within
 .B VALET_KEY_SLOT_STALE_DAYS
 of its cap.
+.IP
+All three SKIP any slot a live session is holding, and say which. Signing in
+mints a refresh token and the server invalidates the one it replaces, so a
+login on a slot in use would kill that session's credentials: the exact
+collision the pool exists to remove. If every candidate is in use, nothing is
+launched and the exit is non\-zero; exit the session on the named slot and
+re\-run.
+.IP
+Each re\-login then reports whether it TOOK, read from the slot's cap rather
+than from its file timestamp. An ordinary token refresh rewrites the
+credential file every time, so the timestamp answers "something refreshed"
+where the question is "did a login happen"; only a completed login moves the
+cap. A slot left stale is a non\-zero exit, because
+.B doctor
+prescribes this command as the repair.
 .TP
 .B valet-key stale
 Across all pools, list every warm slot within
@@ -477,7 +492,9 @@ the login and cap knobs
 .RB ( ADAPTER_UNSET_ENV ,
 env scrubbed so a stray API key cannot override the stored login;
 .BR ADAPTER_LOGIN_ARGS ,
-extra args to reach the login flow when warming;
+the args that reach the sign\-in rather than the agent, required on a pooled
+agent because the re\-login verbs target slots that are already warm, where
+the bare agent is authenticated and offers no sign\-in;
 .BR ADAPTER_EXP_PATTERN ,
 the slot cap pattern, empty for "cap unknown";
 .BR ADAPTER_QUIET ),

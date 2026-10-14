@@ -350,14 +350,38 @@ no=$(VALET_KEY_POOL_ROOT=$D/nopool sh "$SLOTS" lease "$ID" "$B" $$)
 # _run_on_slot execs $VALET_KEY_AGENT_BIN with $VALET_KEY_CRED_ENV=<slot>; the
 # stub
 # records its target AND writes credentials, so warm/force transitions are real.
+#
+# The stub writes a credential carrying a CAP, because the cap is what a real
+# login moves and what the verdict reads; $STUB_CAP_DAYS sets how far out, and
+# each call site picks a distinctly larger value so "the cap advanced" is never
+# decided by how many seconds the test took.
+#
+# $T/stub-rotate-only models the case that makes mtime the wrong clock: a
+# launch that REFRESHED but never logged in, so the credential file is
+# rewritten and the refresh token rotates while the cap stays exactly where it
+# was. That is what bare `claude` does on a warm slot, which is how the
+# re-login paths came to report success having done nothing.
+#
+# It APPENDS the slot it was pointed at, so a one-line $T/warmed is also the
+# assertion that nothing ELSE was launched on. Overwriting recorded only the
+# last launch, which read identically whether a run skipped a slot or merely
+# visited it first, and let a mutation that ignored the lease pass.
 STUB=$T/claude-stub
-CR='{"claudeAiOauth":{"accessToken":"x","refreshToken":"y"}}'
 cat > "$STUB" <<STUBEOF
 #!/bin/sh
-echo "\$CLAUDE_CONFIG_DIR" > "$T/warmed"
-printf '%s\n' '$CR' > "\$CLAUDE_CONFIG_DIR/.credentials.json"
+C=\$CLAUDE_CONFIG_DIR/.credentials.json
+echo "\$CLAUDE_CONFIG_DIR" >> "$T/warmed"
+if [ -f "$T/stub-rotate-only" ]; then
+  _e=\$(sed -n 's/.*"refreshTokenExpiresAt":\([0-9]*\).*/\1/p' "\$C")
+  printf '{"claudeAiOauth":{"refreshToken":"z","refreshTokenExpiresAt":%s}}\n' \
+    "\$_e" > "\$C"
+  exit 0
+fi
+printf '{"claudeAiOauth":{"refreshToken":"y","refreshTokenExpiresAt":%s}}\n' \
+  "\$(( \$(date +%s) * 1000 + \${STUB_CAP_DAYS:-30} * 86400000 ))" > "\$C"
 STUBEOF
 chmod +x "$STUB"
+STUB_CAP_DAYS=30; export STUB_CAP_DAYS
 export VALET_KEY_AGENT_BIN=$STUB VALET_KEY_CRED_ENV=CLAUDE_CONFIG_DIR
 AB=$T/adbase; mkdir -p "$AB"; printf '{}\n' > "$AB/.claude.json"
 AP=$T/adpool/$ID
@@ -377,8 +401,16 @@ printf '%s' "$out" | grep -q "rotated" || fail "login-check no rotation age"
 [ "$(LG counts)" = "3 2 0" ] || fail "counts warm-tally wrong"
 
 touch -d @1000000000 "$AP/slot-1/.credentials.json"       # slot-1 = oldest
-rm -f "$T/warmed"; LG force >/dev/null 2>&1
+rm -f "$T/warmed"; STUB_CAP_DAYS=60
+out=$(LG force 2>&1) && rc=0 || rc=$?
+STUB_CAP_DAYS=30
 [ "$(cat "$T/warmed")" = "$AP/slot-1" ] || fail "force did not pick the oldest"
+# ...and it says whether the login TOOK, by the cap rather than by mtime. An
+# ordinary token rotation rewrites the credential file every time, so mtime
+# answers "something refreshed" where the question is "did a login happen",
+# and an abandoned sign-in then reads as a success.
+printf '%s' "$out" | grep -q 're-logged in' || fail "force gave no verdict"
+[ "$rc" -eq 0 ] || fail "force exited $rc after a completed login"
 
 LG warm >/dev/null 2>&1; rm -f "$T/warmed"                 # warm last cold slot
 out=$(LG warm 2>&1)                                        # pool now full
@@ -414,12 +446,14 @@ printf '%s\n' "$out" | grep -q 'slot-3' && fail "cold slot listed"
 # re-login flow that missed one would leave a session to discover the cap the
 # hard way, and one that took them all would burn a login on a fresh slot.
 LS() { VALET_KEY_POOL_ROOT=$SP sh "$SLOTS" "$@" "$ID" "$AB"; }
-rm -f "$T/warmed"
-out=$(LS login-stale 2>&1)
+rm -f "$T/warmed"; STUB_CAP_DAYS=40
+out=$(LS login-stale 2>&1) && rc=0 || rc=$?
+STUB_CAP_DAYS=30
 [ "$(cat "$T/warmed" 2>/dev/null)" = "$SP/$ID/slot-1" ] \
   || fail "login-stale did not re-login the near-cap slot"
 printf '%s' "$out" | grep -q 'slot-1' || fail "login-stale did not name it"
 printf '%s' "$out" | grep -q 'slot-2' && fail "login-stale touched a far slot"
+[ "$rc" -eq 0 ] || fail "login-stale exited $rc having cleared the one stale"
 
 # With nothing near the cap it is a clean no-op that SAYS so, rather than
 # printing nothing and leaving the caller unsure it ran.
@@ -429,6 +463,110 @@ out=$(LS login-stale 2>&1)
 printf '%s' "$out" | grep -qi "none within" \
   || fail "login-stale was a silent no-op on a fresh pool"
 [ -f "$T/warmed" ] && fail "login-stale logged in with nothing near the cap"
+
+# --- a login NEVER runs on a slot a live session holds -----------------------
+# The pool's founding hazard, arriving from the tool's own side. A login mints
+# a refresh token and the server invalidates the one it replaces, so signing in
+# on a slot someone is using kills that session's credentials: the exact
+# collision the pool exists to remove. cmd_lease has always refused to steal a
+# live lease; warm, force and login-stale chose purely on warmth, age and cap,
+# and could each hand a live slot to a second login flow.
+busy() {   # <slot>: give it a lease held by a live, cmdline-matching process
+  rm -rf "$1/.lease"; mkdir -p "$1/.lease"; echo "$(holder)" > "$1/.lease/pid"
+}
+
+# force must SKIP a busy slot rather than merely refuse when one exists: the
+# oldest warm slot being in use is the common case, and bailing there would
+# leave a free, nearly-as-old slot unrefreshed.
+BZ=$T/busypool; mkdir -p "$BZ/$ID/slot-1" "$BZ/$ID/slot-2"
+BF() { VALET_KEY_POOL_ROOT=$BZ sh "$SLOTS" "$@" "$ID" "$AB"; }
+creds "$BZ/$ID/slot-1" $(( now_ms + 20 * 86400000 ))
+creds "$BZ/$ID/slot-2" $(( now_ms + 20 * 86400000 ))
+touch -d @1000000000 "$BZ/$ID/slot-1/.credentials.json"    # the oldest...
+busy "$BZ/$ID/slot-1"; sleep 0.2                           # ...and in use
+rm -f "$T/warmed"; STUB_CAP_DAYS=90
+out=$(BF force 2>&1) && rc=0 || rc=$?
+STUB_CAP_DAYS=30
+[ "$(cat "$T/warmed" 2>/dev/null)" = "$BZ/$ID/slot-2" ] \
+  || fail "force did not skip the busy oldest slot for the free one"
+[ "$rc" -eq 0 ] || fail "force exited $rc having refreshed a free slot"
+
+# With EVERY warm slot busy there is nothing to do, and it has to say so and
+# exit non-zero: the user asked for a refresh and did not get one.
+busy "$BZ/$ID/slot-2"; sleep 0.2
+rm -f "$T/warmed"
+out=$(BF force 2>&1) && rc=0 || rc=$?
+[ -f "$T/warmed" ] && fail "force launched a login on a live session's slot"
+printf '%s' "$out" | grep -qi "in use" || fail "force did not say why it idled"
+[ "$rc" -ne 0 ] || fail "force exited 0 having refreshed nothing"
+
+# warm: a COLD slot with a live lease is a session signing in right now, so
+# warming it would put two login flows on one credential file.
+BC=$T/busycold; mkdir -p "$BC/$ID"
+VALET_KEY_POOL_ROOT=$BC sh "$SLOTS" provision "$ID" "$AB" 1 >/dev/null
+busy "$BC/$ID/slot-1"; sleep 0.2
+rm -f "$T/warmed"
+out=$(VALET_KEY_POOL_ROOT=$BC sh "$SLOTS" warm "$ID" "$AB" 2>&1) \
+  && rc=0 || rc=$?
+[ -f "$T/warmed" ] && fail "warm launched a login on a slot being claimed"
+printf '%s' "$out" | grep -qi "in use" || fail "warm did not say why it idled"
+[ "$rc" -ne 0 ] || fail "warm exited 0 having warmed nothing"
+
+# login-stale: the busy slot is DEFERRED by name, the free one is done, and the
+# exit is non-zero because a stale slot is still stale. `doctor` prescribes
+# this command, so reporting success with the work outstanding would schedule
+# the same repair every run with nothing changing.
+BS=$T/busystale; mkdir -p "$BS/$ID/slot-1" "$BS/$ID/slot-2"
+creds "$BS/$ID/slot-1" $(( now_ms + 2 * 86400000 ))        # both near the cap
+creds "$BS/$ID/slot-2" $(( now_ms + 2 * 86400000 ))
+busy "$BS/$ID/slot-1"; sleep 0.2
+was=$(cat "$BS/$ID/slot-1/.credentials.json")
+rm -f "$T/warmed"
+out=$(VALET_KEY_POOL_ROOT=$BS sh "$SLOTS" login-stale "$ID" "$AB" 2>&1) \
+  && rc=0 || rc=$?
+[ "$(cat "$T/warmed" 2>/dev/null)" = "$BS/$ID/slot-2" ] \
+  || fail "login-stale did not re-login the free stale slot"
+printf '%s' "$out" | grep -q 'slot-1' || fail "the deferred slot was not named"
+printf '%s' "$out" | grep -qi "in use" || fail "the deferral gave no reason"
+[ "$(cat "$BS/$ID/slot-1/.credentials.json")" = "$was" ] \
+  || fail "the busy slot's credential was touched"
+[ "$rc" -ne 0 ] || fail "login-stale exited 0 with a slot still stale"
+
+# A DEAD lease is not busy. It is reclaimable, so a login may use the slot, and
+# the lease is left exactly as found: tearing one down is inspect-then-modify
+# and belongs to claim_pass under the reclaim mutex.
+rm -rf "$BS/$ID/slot-2/.lease" "$BS/$ID/slot-1/.lease"
+mkdir -p "$BS/$ID/slot-1/.lease"; echo 999999 > "$BS/$ID/slot-1/.lease/pid"
+creds "$BS/$ID/slot-1" $(( now_ms + 2 * 86400000 ))
+rm -f "$T/warmed"; STUB_CAP_DAYS=45
+out=$(VALET_KEY_POOL_ROOT=$BS sh "$SLOTS" login-stale "$ID" "$AB" 2>&1) \
+  && rc=0 || rc=$?
+STUB_CAP_DAYS=30
+[ "$(cat "$T/warmed" 2>/dev/null)" = "$BS/$ID/slot-1" ] \
+  || fail "a dead lease blocked a re-login"
+[ -f "$BS/$ID/slot-1/.lease/pid" ] || fail "login-stale tore down a dead lease"
+[ "$rc" -eq 0 ] || fail "login-stale exited $rc with every stale slot done"
+printf '%s' "$out" | grep -q 're-logged in' \
+  || fail "login-stale gave no verdict"
+
+# A launch that ROTATED but never logged in must not read as a success. The
+# credential file is rewritten on every ordinary token refresh, so its mtime
+# moves either way and only the CAP can tell the two apart. The old mtime
+# verdict is given every chance here: the file is backdated first, so mtime
+# says "changed" as loudly as it can while the cap has not budged.
+creds "$BS/$ID/slot-1" $(( now_ms + 2 * 86400000 ))
+touch -d @1000000000 "$BS/$ID/slot-1/.credentials.json"
+: > "$T/stub-rotate-only"
+rm -f "$T/warmed"
+out=$(VALET_KEY_POOL_ROOT=$BS sh "$SLOTS" login-stale "$ID" "$AB" 2>&1) \
+  && rc=0 || rc=$?
+rm -f "$T/stub-rotate-only"
+[ -f "$T/warmed" ] || fail "login-stale did not attempt the stale slot"
+[ "$(stat -c %Y "$BS/$ID/slot-1/.credentials.json")" -gt 1000000000 ] \
+  || fail "the fixture did not move the credential's mtime"
+printf '%s' "$out" | grep -q UNCHANGED \
+  || fail "a rotation with no login was reported as a re-login"
+[ "$rc" -ne 0 ] || fail "login-stale exited 0 with the cap where it was"
 
 # --- provision CONVERGES on N, rather than only ever growing ----------------
 # It used to just create 1..N, so asking for 2 over a pool of 5 left 5,- and

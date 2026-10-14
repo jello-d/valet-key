@@ -48,6 +48,7 @@
 #   login-check <id> <base>     warm/total, each slot's rotation age + cap
 #   force     <id> <base>       re-login the OLDEST warm slot
 #   login-stale <id> <base>     re-login every slot within STALE_DAYS of its cap
+#   (the three login verbs SKIP any slot a live session holds: see slot_busy)
 #   stale                       ALL pools: WARM slots within STALE_DAYS of cap,
 #                               "<id>/<slot> <days>d" a line (read-only)
 #   sync      <id> <base>       re-fan the shared links across existing slots,
@@ -253,6 +254,30 @@ is_slot() {   # <path>
   _isn=${1##*/slot-}
   case "$_isn" in ''|*[!0-9]*) return 1 ;; esac
   return 0
+}
+
+# Is <slot> held by a LIVE session? The login paths must never run on one.
+#
+# This is the pool's founding hazard, reintroduced from the other side. A
+# login MINTS a refresh token and the server invalidates the one it replaces,
+# so signing in on a slot a live session is holding kills that session's
+# credentials: exactly the collision the pool exists to remove, except caused
+# by the tool itself rather than by two sessions sharing a file. cmd_lease has
+# refused to steal a live lease since the start; warm, force and login-stale
+# simply never asked, and chose purely on warmth, age or cap.
+#
+# It was one day from firing on a real box, 2026-10-14: 6 of 8 slots held by a
+# `mux resume` cohort, and slot-2 eight days from its cap with STALE_DAYS=7.
+#
+# An empty or absent pid is a claim MID-FLIGHT, which is busy and not stale,
+# the same reading claim_pass takes. A lease whose holder is DEAD is not busy;
+# it is left exactly as found, because tearing one down is inspect-then-modify
+# and belongs to claim_pass under the reclaim mutex.
+slot_busy() {   # <slot>
+  [ -d "$1/.lease" ] || return 1
+  _bp=$(cat "$1/.lease/pid" 2>/dev/null || true)
+  [ -n "$_bp" ] || return 0
+  pid_live "$_bp"
 }
 
 cmd_provision() {
@@ -522,24 +547,76 @@ cmd_lease() {
 _run_on_slot() {
   [ -n "${VALET_KEY_AGENT_BIN:-}" ] ||
     die "no agent binary (engine must set it)"
-  echo "valet-key-slots: sign in, then exit to record it." >&2
+  # Name the SLOT, and say what finishing looks like. With LOGIN_ARGS the
+  # command IS the sign-in and returns on its own; bare, it is the agent's
+  # whole UI and only exiting records anything. Saying "exit to record it" for
+  # both left a user watching an agent print unrelated startup chatter with no
+  # idea whether their key had been refreshed.
+  if [ -n "${VALET_KEY_LOGIN_ARGS:-}" ]; then
+    echo "valet-key-slots: ${1##*/}: complete the sign-in." >&2
+  else
+    echo "valet-key-slots: ${1##*/}: sign in, then exit to record it." >&2
+  fi
   for _u in ${VALET_KEY_UNSET_ENV:-}; do unset "$_u" 2>/dev/null || true; done
   # shellcheck disable=SC2086  # LOGIN_ARGS is a deliberately-split arg list
   env "${VALET_KEY_CRED_ENV:?}=$1" "$VALET_KEY_AGENT_BIN" \
     ${VALET_KEY_LOGIN_ARGS:-} || true
 }
 
+# Re-login one WARM slot and say whether it TOOK. 0 = it did.
+#
+# The verdict reads the CAP, not the file's mtime, wherever the agent records
+# one. An ordinary token rotation rewrites the credential file every time, so
+# mtime answers "something refreshed" when the question is "did a login
+# happen", and a sign-in the user abandoned reads as a success. The cap is
+# absolute from login and rotation does not extend it, so only a completed
+# login moves it. That makes it the right clock for the VERDICT in both
+# callers, and still the wrong one for cmd_force's CHOICE of slot, which is
+# about rotation age.
+#
+# An agent with no stored cap (codex exports an empty pattern) falls back to
+# mtime, which is all there is: that degrades the verdict rather than inverting
+# it, where reading an absent cap as "unchanged" would report every codex
+# login as a failure.
+_relogin() {   # <slot>
+  _rs=$1
+  _r0=$(slot_refresh_exp "$_rs" || echo 0); _m0=$(mtime "$_rs/$CRED_FILE")
+  _run_on_slot "$_rs"
+  _r1=$(slot_refresh_exp "$_rs" || echo 0); _m1=$(mtime "$_rs/$CRED_FILE")
+  if [ "$_r0" -gt 0 ] && [ "$_r1" -gt 0 ]; then
+    if [ "$_r1" -gt "$_r0" ]; then
+      echo "valet-key-slots: ${_rs##*/}: re-logged in," \
+        "$(days_until "$_r1")d to cap."
+      return 0
+    fi
+  elif [ "$_m1" -gt "$_m0" ]; then
+    echo "valet-key-slots: ${_rs##*/}: re-logged in."
+    return 0
+  fi
+  echo "valet-key-slots: ${_rs##*/}: UNCHANGED, the login did not complete."
+  return 1
+}
+
 cmd_warm() {
   id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
   [ -d "$pd" ] || die "no pool for $id ($pd); provision it first"
   counts=$(pool_counts "$pd"); warm0=${counts% *}; total=${counts#* }
-  target=""
+  target=""; busy=0
   for slot in "$pd"/slot-*; do
     is_slot "$slot" || continue
     seed_slot "$base" "$slot"
-    [ -s "$slot/$CRED_FILE" ] || { target=$slot; break; }
+    [ -s "$slot/$CRED_FILE" ] && continue
+    # A cold slot with a live lease is a session signing in RIGHT NOW (or
+    # about to): warming it would put two login flows on one credential file.
+    if slot_busy "$slot"; then busy=$((busy + 1)); continue; fi
+    target=$slot; break
   done
   if [ -z "$target" ]; then
+    if [ "$busy" -gt 0 ]; then
+      echo "valet-key-slots: $id: $busy cold slot(s) in use, none free" \
+        "to warm."
+      return 1
+    fi
     echo "valet-key-slots: $id pool FULL: all $total warm (use 'force')."
     return 0
   fi
@@ -577,41 +654,55 @@ cmd_login_check() {
 cmd_force() {
   id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
   [ -d "$pd" ] || die "no pool for $id ($pd)"
-  oldest=""; omt=0
+  oldest=""; omt=0; busy=0
   for slot in "$pd"/slot-*; do
     is_slot "$slot" || continue
     [ -s "$slot/$CRED_FILE" ] || continue
+    if slot_busy "$slot"; then busy=$((busy + 1)); continue; fi
     _m=$(mtime "$slot/$CRED_FILE")
     if [ -z "$oldest" ] || [ "$_m" -lt "$omt" ]; then oldest=$slot; omt=$_m; fi
   done
   if [ -z "$oldest" ]; then
+    if [ "$busy" -gt 0 ]; then
+      echo "valet-key-slots: $id: all $busy warm slot(s) in use; exit a" \
+        "session and re-run."
+      return 1
+    fi
     echo "valet-key-slots: $id: no warm slots to refresh."; return 0
   fi
   _now=$(date +%s); _ago=$(human_ago $((_now - omt)))
   echo "valet-key-slots: $id: refreshing ${oldest##*/} (rotated $_ago ago)."
-  _run_on_slot "$oldest"
-  [ "$(mtime "$oldest/$CRED_FILE")" -gt "$omt" ] \
-    && echo "valet-key-slots: $id: ${oldest##*/} refreshed." \
-    ||
-      echo "valet-key-slots: $id: ${oldest##*/} unchanged (not re-logged in)."
+  _relogin "$oldest"
 }
 
 cmd_login_stale() {
   id=${1:?}; base=${2:?}; pd=$(pool_dir "$id")
   [ -d "$pd" ] || die "no pool for $id ($pd)"
-  _did=0
+  found=0; deferred=0; failed=0
   for slot in "$pd"/slot-*; do
     is_slot "$slot" || continue
     [ -s "$slot/$CRED_FILE" ] || continue
     _e=$(slot_refresh_exp "$slot") || continue
     [ "$(days_until "$_e")" -lt "$STALE_DAYS" ] || continue
+    found=$((found + 1))
+    if slot_busy "$slot"; then
+      echo "valet-key-slots: ${slot##*/} within ${STALE_DAYS}d of cap but" \
+        "IN USE; a login would rotate the token under that session."
+      echo "valet-key-slots: exit the session on ${slot##*/}, then re-run."
+      deferred=$((deferred + 1)); continue
+    fi
     echo "valet-key-slots: ${slot##*/} within ${STALE_DAYS}d of cap; re-login."
-    _run_on_slot "$slot"; _did=$((_did + 1))
+    _relogin "$slot" || failed=$((failed + 1))
   done
-  if [ "$_did" -eq 0 ]; then
+  if [ "$found" -eq 0 ]; then
     echo "valet-key-slots: $id: none within ${STALE_DAYS}d of cap."
+    return 0
   fi
-  return 0
+  # Something was owed. Anything left owing is a non-zero exit, because this is
+  # what `doctor` prescribes as the repair: reporting success over a slot that
+  # is still stale would schedule the same repair every run with nothing
+  # changing, which is the apply-did-not-fix loop.
+  [ "$((deferred + failed))" -eq 0 ]
 }
 
 # stale: across ALL pools, list every WARM slot within STALE_DAYS of its cap,
