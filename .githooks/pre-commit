@@ -2,8 +2,9 @@
 # .githooks/pre-commit - run the shared conventions test before every commit.
 #
 # CANONICAL COPY: ~/src/shared-notes/_pre-commit, vendored into each repo as
-# .githooks/pre-commit. `tackup notes check` compares the copies and names the
-# drift. EDIT THE CANONICAL COPY, then re-seed: `tackup notes conventions`.
+# .githooks/pre-commit. `tackup check notes` compares the copies and names the
+# drift. EDIT THE CANONICAL COPY, then re-seed:
+# `tackup module notes conventions`.
 #
 # IT RUNS THE TEST, IT DOES NOT REIMPLEMENT IT. The hook this replaces carried
 # its own 80-column awk, so the tree had two column checks free to disagree, and

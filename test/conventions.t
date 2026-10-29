@@ -3,10 +3,10 @@
 #
 # CANONICAL COPY: ~/src/shared-notes/_conventions.t. This file is VENDORED into
 # each repo (a real file, not a symlink) because a standalone clone from GitHub
-# must be able to run its own suite with nothing else present. `tackup notes
-# check` compares every vendored copy against the canonical one and names the
+# must be able to run its own suite with nothing else present. `tackup check
+# notes` compares every vendored copy against the canonical one and names the
 # drift, so the copies cannot quietly diverge. EDIT THE CANONICAL COPY, then
-# re-seed: `tackup notes conventions`.
+# re-seed: `tackup module notes conventions`.
 #
 # It enforces the "Code style" section of ~/src/shared-notes/_common.md, and
 # since 2026-10-04 the "package tree is FHS" section too (rules 9 and 10). That
